@@ -176,9 +176,9 @@ local Label = Tab:CreateLabel("                                       TREE FEATU
 local treeUpgradeEnabled = false
 
 Tab:CreateToggle({
-   Name = "Tree Unlocks",
+   Name = "Tree Upgrades",
    CurrentValue = false,
-   Flag = "TreeUnlocks",  -- better flag name (Flag4 is too generic)
+   Flag = "TreeUnlocks",
    Callback = function(Value)
       treeUpgradeEnabled = Value
       
@@ -190,47 +190,30 @@ Tab:CreateToggle({
                   local upgradeRemote = remotes:WaitForChild("Upgrade")
                   
                   local upgrades = {
-                     "TreeMoreCash",
-                        "TreeMoreWalkspeed",
-                        "TreeMoreXP",
-                        "TreeMoreCoins",
-                        "TreeMoreCash2",
-                        "TreeMoreCollectionRange",
-                        "TreeMoreSpawnCap",
-                        "TreeMoreSpawnBulk",
-                        "TreeRebirthBoostsCash",
-                        "TreeMoreCoins2",
-                        "TreeUnlockReading",
-                        "TreeMoreCoins3",
-                        "TreeMoreReadingPoints",
-                        "TreeMoreCash3",
-                        "TreeCheaperBooks",
-                        "TreeMoreXP2",
-                        "TreeCoinsBoostXP",
+                     "TreeMoreCash", "TreeMoreWalkspeed", "TreeMoreXP", "TreeMoreCoins",
+                     "TreeMoreCash2", "TreeMoreCollectionRange", "TreeMoreSpawnCap", 
+                     "TreeMoreSpawnBulk", "TreeRebirthBoostsCash", "TreeMoreCoins2",
+                     "TreeUnlockReading", "TreeMoreCoins3", "TreeMoreReadingPoints",
+                     "TreeMoreCash3", "TreeCheaperBooks", "TreeMoreXP2", "TreeCoinsBoostXP"
                   }
                   
                   for _, upgradeName in ipairs(upgrades) do
-                     -- Stop early if toggle was turned off during the loop
                      if not treeUpgradeEnabled then break end
                      
-                     local args = {
-                        "TreeUpgrade",     -- category
-                        upgradeName,         -- upgrade name
-                     }
+                     -- FIXED: 3 arguments like your working Cash/Rebirth toggles
+                     local args = { "TreeUpgrade", upgradeName, true }
+                     print("Buying:", upgradeName)  -- DEBUG: see what it's attempting
                      
                      upgradeRemote:FireServer(unpack(args))
-                     task.wait(0.8)          -- delay between each upgrade attempt
+                     task.wait(0.4)  -- FASTER: 17×0.4s = ~7 min cycles
                   end
                   
-                  task.wait(10)  -- cooldown after completing one full cycle
+                  task.wait(3)  -- shorter cooldown
                end)
-               
-               -- Small safety wait in case pcall fails repeatedly
                task.wait(0.5)
             end
          end)
       end
-      -- When Value = false → loop stops naturally via the while condition
    end,
 })
 local Label = Tab:CreateLabel("                                       COIN FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
