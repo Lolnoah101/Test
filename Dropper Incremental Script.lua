@@ -312,7 +312,7 @@ local Label = Tab:CreateLabel("                                       BOOK FEATU
 local autoBuyBooksEnabled = false
 
 Tab:CreateToggle({
-   Name = "Buy Books",
+   Name = "Auto Buy Books",
    CurrentValue = false,
    Flag = "AutoBuyBooks",
    Callback = function(Value)
@@ -322,15 +322,15 @@ Tab:CreateToggle({
          task.spawn(function()
             while autoBuyBooksEnabled do
                pcall(function()
-                    local args = {
-                        true
-                    }
-                  game:GetService("ReplicatedStorage")
-                     :WaitForChild("Remotes")
-                     :WaitForChild("BuyBook")
-                     :FireServer(unpack(args))
+                  local remote = game:GetService("ReplicatedStorage")
+                      :WaitForChild("Remotes")
+                      :WaitForChild("BuyBook")
+                  
+                  print("Buying book attempt...")
+                  remote:FireServer()          -- ← most likely correct
                end)
-               task.wait(10)   -- very fast – use task.wait(0.05) if too aggressive
+               
+               task.wait(0.8)   -- every ~0.8 seconds - feels fast but not spammy
             end
          end)
       end
