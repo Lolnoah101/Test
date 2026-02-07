@@ -205,12 +205,12 @@ Tab:CreateToggle({
                      print("Buying:", upgradeName)  -- DEBUG: see what it's attempting
                      
                      treeUpgradeRemote:FireServer(upgradeName)  -- ← FIXED: Single arg (upgrade name only) like your working old GUI
-                     task.wait(0.6)  -- ← Back to 0.6s (matches your old working code)
+                     task.wait(1)  -- ← Back to 0.6s (matches your old working code)
                   end
                   
-                  task.wait(10)  -- ← Back to 10s cooldown (matches your old working code)
+                  task.wait(30)  -- ← Back to 10s cooldown (matches your old working code)
                end)
-               task.wait(0.5)
+               task.wait(30)
             end
          end)
       end
@@ -248,14 +248,14 @@ Tab:CreateToggle({
                      local coinName = coin.Name
                      if coinName and #coinName > 0 then
                         collectRemote:FireServer(coinName)
-                        task.wait(0.08)   -- small delay between fires (adjust if needed)
+                        task.wait()   -- small delay between fires (adjust if needed)
                      end
                   end
                end)
                
                -- Important: wait after processing all current coins
                -- This gives time for new coins/parts to spawn
-               task.wait(1.5)   -- ← tune this value (1–3 seconds is common)
+               task.wait()   -- ← tune this value (1–3 seconds is common)
             end
          end)
       end
