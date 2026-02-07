@@ -36,7 +36,7 @@ local autoUpgradeEnabled = false
 Tab:CreateToggle({
    Name = "Auto Click",
    CurrentValue = false,
-   Flag = "Flag1",
+   Flag = "AutoClick",
    Callback = function(Value)
       autoClickEnabled = Value
       
@@ -59,7 +59,7 @@ Tab:CreateToggle({
 Tab:CreateToggle({
    Name = "CashUpgrades",
    CurrentValue = false,
-   Flag = "Flag2",
+   Flag = "CashUpgrades",
    Callback = function(Value)
       autoUpgradeEnabled = Value
       
@@ -105,7 +105,7 @@ local autoRebirth2Enabled = false
 Tab:CreateToggle({
    Name = "Auto Rebirth",
    CurrentValue = false,
-   Flag = "Flag3",
+   Flag = "AutoRebirth",
    Callback = function(Value)
       autoRebirthEnabled = Value
       
