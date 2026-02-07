@@ -374,4 +374,5 @@ Tab:CreateToggle({
       end
    end,
 })
+
 Rayfield:LoadConfiguration()
