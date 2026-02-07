@@ -263,4 +263,48 @@ Tab:CreateToggle({
    end,
 })
 
+local coinUpgradesEnabled = false
+
+Tab:CreateToggle({
+   Name = "Coin Upgrades",
+   CurrentValue = false,
+   Flag = "CoinUpgrades",
+   Callback = function(Value)
+      coinUpgradesEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while coinUpgradesEnabled do
+               pcall(function()
+                  local remotes = game:GetService("ReplicatedStorage").Remotes
+                  local upgradeRemote = remotes:WaitForChild("Upgrade")
+                  
+                  local upgrades = {
+                     "CoinsMoreCash","CoinsMoreXP","CoinsFasterSpawn",
+                  }
+                  
+                  for _, upgradeName in ipairs(upgrades) do
+                     if not coinUpgradesEnabled then break end
+                     
+                     local args = {
+                        "Coins",       -- category (matches your old working code)
+                        upgradeName,   -- upgrade name
+                        true           -- purchase/activate flag
+                     }
+                     
+                     upgradeRemote:FireServer(unpack(args))
+                     task.wait(1)  -- delay between upgrades (adjust if needed)
+                  end
+                  
+                  task.wait(10)  -- cooldown after completing one full cycle
+               end)
+               
+               task.wait(10)  -- safety wait in case of repeated pcall failures
+            end
+         end)
+      end
+      -- when Value = false → the while loop stops naturally
+   end,
+})
+
 Rayfield:LoadConfiguration()
