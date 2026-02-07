@@ -337,4 +337,43 @@ Tab:CreateToggle({
    end,
 })
 
+local autoReadingUpgradesEnabled = false
+
+Tab:CreateToggle({
+   Name = "Reading Upgrades",
+   CurrentValue = false,
+   Flag = "ReadingUpgrades",
+   Callback = function(Value)
+      autoReadingUpgradesEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoReadingUpgradesEnabled do
+               pcall(function()
+                    local upgrades = {
+                        "ReadingMoreCash",
+                        "ReadingMoreXP",
+                        "ReadingMoreReadingPoints",
+                        -- add more if you find them
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("DepositUpgrade")
+                    
+                    -- Fire all upgrades in quick succession
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            upgradeName,   -- only the upgrade name
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(10) -- ← small delay between each upgrade (adjust if needed)
+                    end
+                    
+                    task.wait(30)   -- ← wait here after the full cycle (this is your repeat timer)
+                end
+            end
+         end)
+      end)
+   end,
+})
 Rayfield:LoadConfiguration()
