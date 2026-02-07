@@ -312,9 +312,9 @@ local Label = Tab:CreateLabel("                                       BOOK FEATU
 local autoBuyBooksEnabled = false
 
 Tab:CreateToggle({
-   Name = "Auto Click",
+   Name = "Buy Books",
    CurrentValue = false,
-   Flag = "Flag1",
+   Flag = "AutoBuyBooks",
    Callback = function(Value)
       autoBuyBooksEnabled = Value
       
@@ -327,7 +327,7 @@ Tab:CreateToggle({
                     }
                   game:GetService("ReplicatedStorage")
                      :WaitForChild("Remotes")
-                     :WaitForChild("DropperClick")
+                     :WaitForChild("BuyBook")
                      :FireServer(unpack(args))
                end)
                task.wait(10)   -- very fast – use task.wait(0.05) if too aggressive
