@@ -171,7 +171,6 @@ Tab:CreateToggle({
    end,
 })
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-
 local Label = Tab:CreateLabel("                                       TREE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local treeUpgradeEnabled = false
@@ -234,36 +233,51 @@ Tab:CreateToggle({
       -- When Value = false → loop stops naturally via the while condition
    end,
 })
+local Label = Tab:CreateLabel("                                       COIN FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local CollectCoinsEnabled = false
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+Tab:CreateToggle({
+   Name = "Collect Coins",           -- or "Auto Collect Coins" or whatever fits better
+   CurrentValue = false,
+   Flag = "CollectCoins",
+   Callback = function(Value)
+      CollectCoinsEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while CollectCoinsEnabled do
+               pcall(function()
+                  -- Try to get the folder safely
+                  local mapEssentials = workspace:FindFirstChild("MapEssentials")
+                  if not mapEssentials then return end
+                  
+                  local spawnedFolder = mapEssentials:FindFirstChild("Spawned")
+                  if not spawnedFolder then return end
+                  
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local collectRemote = remotes:FindFirstChild("CollectPart")
+                  if not collectRemote then return end
+                  
+                  -- Collect all current coins
+                  for _, coin in ipairs(spawnedFolder:GetChildren()) do
+                     if not CollectCoinsEnabled then return end  -- early exit if toggled off
+                     
+                     local coinName = coin.Name
+                     if coinName and #coinName > 0 then
+                        collectRemote:FireServer(coinName)
+                        task.wait(0.08)   -- small delay between fires (adjust if needed)
+                     end
+                  end
+               end)
+               
+               -- Important: wait after processing all current coins
+               -- This gives time for new coins/parts to spawn
+               task.wait(1.5)   -- ← tune this value (1–3 seconds is common)
+            end
+         end)
+      end
+      -- when Value = false → the while loop stops naturally
+   end,
+})
 
 Rayfield:LoadConfiguration()
