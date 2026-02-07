@@ -374,5 +374,138 @@ Tab:CreateToggle({
       end
    end,
 })
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       CRYSTALIZE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local CrystalizeEnabled = false
+
+Tab:CreateToggle({
+   Name = "Auto Crystalize",
+   CurrentValue = false,
+   Flag = "AutoCrystalize",
+   Callback = function(Value)
+      CrystalizeEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while CrystalizeEnabled do
+               pcall(function()
+                  game:GetService("ReplicatedStorage")
+                     :WaitForChild("Remotes")
+                     :WaitForChild("Crystalize")
+                     :FireServer()
+               end)
+               task.wait(60)   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
+   end,
+})
+-------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       ↓↓TREEUPGRADES2↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local treeUpgradeEnabled = false
+
+local treeUpgradeEnabled = false
+
+Tab:CreateToggle({
+   Name = "TreeUpgrades2",
+   CurrentValue = false,
+   Flag = "TreeUpgrades2",
+   Callback = function(Value)
+      treeUpgradeEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while treeUpgradeEnabled do
+               pcall(function()
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local treeUpgradeRemote = remotes:WaitForChild("TreeUpgrade")
+                  
+                  local upgrades = {   -- ← added the missing opening {
+                     "TreeCollectionBoosts",
+                     "TreeStatBoosts",
+                     "TreeMoreCrystals",
+                     "TreeKeepPrestige",
+                     "TreeAutoUpgrades",
+                     "TreeLibrarian",
+                     "TreeUnlockEnergy",
+                     "TreeSafePrestige",
+                     "TreeMoreEnergy",
+                     "TreeMoreEnergyEquips",
+                     "TreeMoreCrystals2",
+                     "TreeMoreEnergy2",
+                     "TreeUnlockDiamonds",
+                     "TreeKeepCrystalUpgrades",
+                     "TreeMoreDiamonds",
+                     "TreeSafeCrystalize",
+                     "TreeUnlockAscension",
+                  }  -- ← and the matching closing }
+                  
+                  for _, upgradeName in ipairs(upgrades) do
+                     if not treeUpgradeEnabled then break end                     
+                     treeUpgradeRemote:FireServer(upgradeName)
+                     task.wait(1)
+                  end
+                  
+                  task.wait(30)
+               end)
+               
+               task.wait(0.5)  -- small safety wait between cycles
+            end
+         end)
+      end
+   end,
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Tab = Window:CreateTab("Auto2", 4483362458)
+
+local PowerEnabled = false 
+local energyCashEnabled = false
+local energyRebirthEnabled = false
+local energyReadingPointsEnabled = false
+local energyCoinsEnabled = false
+local energyXPEnabled = false
+local energyCrystalsEnabled = false
+
+local Label = Tab:CreateLabel("                                       ↓↓POWER FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local Button = Tab:CreateButton({
+   Name = "Button Example",
+   Callback = function()
+   local args = {
+            "EnergyMoreCash"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCashEnabled = not energyCashEnabled
+        
+        if energyCashEnabled then
+            Rayfield:Notify({
+             Title = "Energy Cash Activated!",
+            Content = "Energy Cash is now enabled.",
+            Duration = 6.5,
+            Image = 4483362458,
+            
+            })
+            print("Cash activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Cash Deactivated!",
+            Content = "Energy Cash is now disabled.",
+            Duration = 6.5,
+            Image = 4483362458,
+            })
+            print("Cash off!")
+        end
+   end,
+})
+
+
+
+
+
+
 
 Rayfield:LoadConfiguration()
