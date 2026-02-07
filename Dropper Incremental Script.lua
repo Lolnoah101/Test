@@ -601,7 +601,7 @@ local Button = Tab:CreateButton({
    Name = "EnergyMoreCoins",
    Callback = function()
    local args = {
-            "EnergyMoreCash"
+            "EnergyMoreCoins"
         }
         game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
         -- Toggle the state
@@ -761,6 +761,32 @@ Tab:CreateToggle({
          end)
       end
       -- When Value = false → loop stops naturally via the while condition
+   end,
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       ↓↓FIRE FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local autoFireEnabled = false
+
+Tab:CreateToggle({
+   Name = "Convert Fire",
+   CurrentValue = false,
+   Flag = "Fire",
+   Callback = function(Value)
+      autoFireEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoFireEnabled do
+               pcall(function()
+                  game:GetService("ReplicatedStorage")
+                     :WaitForChild("Remotes")
+                     :WaitForChild("Fire")
+                     :FireServer()
+               end)
+               task.wait(60)   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
    end,
 })
 ------------------------------------------------------------------------------------------------------------------------------------------------
