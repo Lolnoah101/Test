@@ -720,6 +720,114 @@ Tab:CreateToggle({
 
 local diamondUpgradesEnabled = false
 
+Tab:CreateToggle({
+   Name = "Rebirth Upgrades",
+   CurrentValue = false,
+   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Callback = function(Value)
+      diamondUpgradesEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while diamondUpgradesEnabled do
+               pcall(function()
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local upgradeRemote = remotes:WaitForChild("Upgrade")
+                  
+                  local upgrades = {
+                     "DiamondsMoreEnergy", "DiamondsMoreXP", "DiamondsMoreCrystals"
+                  }
+                  
+                  for _, upgradeName in ipairs(upgrades) do
+                     -- Stop early if toggle was turned off during the loop
+                     if not diamondUpgradesEnabled then break end
+                     
+                     local args = {
+                        "Diamonds",     -- category
+                        upgradeName,         -- upgrade name
+                        true                 -- purchase/activate flag
+                     }
+                     
+                     upgradeRemote:FireServer(unpack(args))
+                     task.wait(1)          -- delay between each upgrade attempt
+                  end
+                  
+                  task.wait(10)  -- cooldown after completing one full cycle
+               end)
+               
+               -- Small safety wait in case pcall fails repeatedly
+               task.wait(10)
+            end
+         end)
+      end
+      -- When Value = false → loop stops naturally via the while condition
+   end,
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Tab = Window:CreateTab("Misc", 4483362458)
+
+local autoPresteigeEnabled = false
+
+Tab:CreateToggle({
+   Name = "Auto Prestige",
+   CurrentValue = false,
+   Flag = "Prestige",
+   Callback = function(Value)
+      autoPresteigeEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoPresteigeEnabled do
+               pcall(function()
+                  game:GetService("ReplicatedStorage")
+                     :WaitForChild("Remotes")
+                     :WaitForChild("Prestige")
+                     :FireServer()
+               end)
+               task.wait(60)   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
+   end,
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local autoMerchantEnabled = false
+
+Tab:CreateToggle({
+   Name = "Rebirth Upgrades",
+   CurrentValue = false,
+   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Callback = function(Value)
+      autoMerchantEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoMerchantEnabled do
+               pcall(function()
+                  local slots = {
+                        "Slot1",
+                        "Slot2",
+                        "Slot3",
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local merchantRemote = remotes:WaitForChild("Merchant")
+                    
+                    for _, slot in ipairs(slots) do
+                        local args = {
+                            "Buy",
+                            slot
+                        }
+                        merchantRemote:FireServer(unpack(args))
+                        task.wait(1)
+                    end
+                    task.wait(10)  -- cooldown after completing one full cycle
+                end)
+         end)
+      end
+      -- When Value = false → loop stops naturally via the while condition
+   end,
+})
 
 
 
