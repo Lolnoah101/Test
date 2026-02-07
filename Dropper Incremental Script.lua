@@ -1,177 +1,130 @@
-local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+local OrionLib = loadstring(game:HttpGet(('https://raw.githubusercontent.com/jensonhirst/Orion/main/source')))()
 
-local Window = Rayfield:CreateWindow({
-   Name = "[Merchant] Dropper Incremental",
-   Icon = 0,
-   LoadingTitle = "Hollow Moon Scripts",
-   LoadingSubtitle = "By The Hollows",
-   ShowText = "HM HUB",
-   Theme = "Default",
+local Window = OrionLib:MakeWindow({Name = "[Merchant] Dropper Incremental", HidePremium = false, SaveConfig = true, ConfigFolder = "OrionTest"})
 
-   ToggleUIKeybind = "K",
-
-   DisableRayfieldPrompts = false,
-   DisableBuildWarnings = false,
-
-   ConfigurationSaving = {
-      Enabled = true,
-      FolderName = nil,
-      FileName = "Big Hub"
-   },
-
-   Discord = {
-      Enabled = false,
-      Invite = "qXMktjStS3",  -- corrected (without full url)
-      RememberJoins = true
-   },
-
-   KeySystem = false,
+local Tab = Window:MakeTab({
+    Name = "Auto Features",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
 })
-
-local Tab = Window:CreateTab("Auto", 4483362458)
-
+------------------------------------------------------------------------------------------------------------------------------------------------
 local autoClickEnabled = false
-local autoUpgradeEnabled = false
 
-Tab:CreateToggle({
-   Name = "Auto Click",
-   CurrentValue = false,
-   Flag = "Flag1",
-   Callback = function(Value)
-      autoClickEnabled = Value
-      
-      if Value then
-         task.spawn(function()
-            while autoClickEnabled do
-               pcall(function()
-                  game:GetService("ReplicatedStorage")
-                     :WaitForChild("Remotes")
-                     :WaitForChild("DropperClick")
-                     :FireServer()
-               end)
-               task.wait()   -- very fast – use task.wait(0.05) if too aggressive
-            end
-         end)
-      end
-   end,
+Tab:AddToggle({
+    Name = "AutoClick",
+    Default = false,
+    Callback = function(Value)
+        autoClickEnabled = Value -- Update based on toggle state
+
+        if autoClickEnabled then
+            task.spawn(function()
+                while autoClickEnabled do
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("DropperClick"):FireServer()
+                    task.wait() -- Short delay to avoid overwhelming the server
+                end
+            end)
+        end
+    end
 })
+------------------------------------------------------------------------------------------------------------------------------------------------
+local autoUpgradesEnabled = false
 
-Tab:CreateToggle({
-   Name = "CashUpgrades",
-   CurrentValue = false,
-   Flag = "Flag2",
-   Callback = function(Value)
-      autoUpgradeEnabled = Value
-      
-      if Value then
-         task.spawn(function()
-            while autoUpgradeEnabled do
-               pcall(function()
-                  local remotes = game:GetService("ReplicatedStorage").Remotes
-                  local upgradeRemote = remotes:WaitForChild("Upgrade")
-                  
-                  local upgrades = {
-                     "CashMoreCash",
-                     "CashMoreXP",
-                     "CashFasterButton"
-                  }
-                  
-                  for _, upgradeName in ipairs(upgrades) do
-                     if not autoUpgradeEnabled then break end
+local Toggle = Tab:AddToggle({
+    Name = "CashUpgrades",
+    Default = false,
+    Callback = function(Value)
+        autoUpgradesEnabled = Value
+        
+        if autoUpgradesEnabled then
+            task.spawn(function()
+                while autoUpgradesEnabled do
+                
+                    -- Add all your cash upgrade names here
+                    local upgrades = {
+                        "CashMoreCash",
+                        "CashMoreXP",
+                        "CashFasterButton"
+                    }
                     
-                     local args = {
-                        "Cash",       -- category
-                        upgradeName,  -- upgrade name
-                        true          -- probably "purchase" flag
-                     }
-                     
-                     upgradeRemote:FireServer(unpack(args))
-                     task.wait(0.8)   -- delay between upgrades (adjust if needed)
-                  end
-               end)
-               
-               task.wait(6)  -- wait after finishing one full cycle of all upgrades
-            end
-         end)
-      end
-   end,
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("Upgrade")
+                    
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            "Cash",      -- category (same for all cash)
+                            upgradeName, -- specific upgrade
+                            true         -- the boolean flag
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(1)  -- delay between each (0.4–1.2s if needed)
+                    end
+                    
+                    task.wait(5)   -- big wait after full cycle
+                end
+            end)
+        end
+    end
 })
------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       REBIRTH FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          REBIRTH FEATURES         ")
 
 local autoRebirthEnabled = false
-local autoRebirth2Enabled = false
+local autoRebirthUpgradesEnabled = false
 
-Tab:CreateToggle({
-   Name = "Auto Rebirth",
-   CurrentValue = false,
-   Flag = "Flag3",
-   Callback = function(Value)
-      autoRebirthEnabled = Value
-      
-      if Value then
-         task.spawn(function()
-            while autoRebirthEnabled do
-               pcall(function()
-                  game:GetService("ReplicatedStorage")
-                     :WaitForChild("Remotes")
-                     :WaitForChild("Rebirth")
-                     :FireServer()
-               end)
-               task.wait(60)   -- very fast – use task.wait(0.05) if too aggressive
-            end
-         end)
-      end
-   end,
+Tab:AddToggle({
+    Name = "Auto Rebirth",
+    Default = false,
+    Callback = function(Value)
+        autoRebirthEnabled = Value -- Update based on toggle state
+
+        if autoRebirthEnabled then
+            task.spawn(function()
+                while autoRebirthEnabled do
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Rebirth"):FireServer()
+                    task.wait(60)
+                end
+            end)
+        end
+    end
 })
 
-Tab:CreateToggle({
-   Name = "Rebirth Upgrades",
-   CurrentValue = false,
-   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
-   Callback = function(Value)
-      autoRebirth2Enabled = Value
-      
-      if Value then
-         task.spawn(function()
-            while autoRebirth2Enabled do
-               pcall(function()
-                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-                  local upgradeRemote = remotes:WaitForChild("Upgrade")
-                  
-                  local upgrades = {
-                     "RebirthMoreCash",
-                     "RebirthMoreXP",
-                     "RebirthMoreRebirthPoints",
-                  }
-                  
-                  for _, upgradeName in ipairs(upgrades) do
-                     -- Stop early if toggle was turned off during the loop
-                     if not autoRebirth2Enabled then break end
-                     
-                     local args = {
-                        "RebirthPoints",     -- category
-                        upgradeName,         -- upgrade name
-                        true                 -- purchase/activate flag
-                     }
-                     
-                     upgradeRemote:FireServer(unpack(args))
-                     task.wait(0.8)          -- delay between each upgrade attempt
-                  end
-                  
-                  task.wait(6)  -- cooldown after completing one full cycle
-               end)
-               
-               -- Small safety wait in case pcall fails repeatedly
-               task.wait(0.5)
-            end
-         end)
-      end
-      -- When Value = false → loop stops naturally via the while condition
-   end,
+local Toggle = Tab:AddToggle({
+    Name = "Rebirth Upgrades",
+    Default = false,
+    Callback = function(Value)
+        autoRebirthUpgradesEnabled = Value
+        
+        if autoRebirthUpgradesEnabled then
+            task.spawn(function()
+                while autoRebirthUpgradesEnabled do              
+                    -- Add all your cash upgrade names here
+                    local upgrades = {
+                        "RebirthMoreCash",
+                        "RebirthMoreXP",
+                        "RebirthMoreRebirthPoints",
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("Upgrade")
+                    
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            "RebirthPoints",      -- category (same for all rebirth points)
+                            upgradeName, -- specific upgrade
+                            true         -- the boolean flag
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(1)   -- delay between each (0.4–1.2s if needed)
+                    end
+                    
+                    task.wait(10)   -- big wait after full cycle
+                end
+            end)
+        end
+    end
 })
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       TREE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          TREE FEATURES         ")
 
 local treeUpgradeEnabled = false
 
@@ -187,11 +140,11 @@ Tab:CreateToggle({
             while treeUpgradeEnabled do
                pcall(function()
                   local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-                  local upgradeRemote = remotes:WaitForChild("Upgrade")
+                  local treeUpgradeRemote = remotes:WaitForChild("TreeUpgrade")  -- ← FIXED: Use dedicated TreeUpgrade remote (like your working old GUI)
                   
                   local upgrades = {
                      "TreeMoreCash", "TreeMoreWalkspeed", "TreeMoreXP", "TreeMoreCoins",
-                     "TreeMoreCash2", "TreeMoreCollectionRange", "TreeMoreSpawnCap", 
+                     "TreeMoreCash2", "TreeMoreCollectionRange", "TreeMoreSpawnCap",
                      "TreeMoreSpawnBulk", "TreeRebirthBoostsCash", "TreeMoreCoins2",
                      "TreeUnlockReading", "TreeMoreCoins3", "TreeMoreReadingPoints",
                      "TreeMoreCash3", "TreeCheaperBooks", "TreeMoreXP2", "TreeCoinsBoostXP"
@@ -200,67 +153,625 @@ Tab:CreateToggle({
                   for _, upgradeName in ipairs(upgrades) do
                      if not treeUpgradeEnabled then break end
                      
-                     -- FIXED: 3 arguments like your working Cash/Rebirth toggles
-                     local args = { "TreeUpgrade", upgradeName, true }
                      print("Buying:", upgradeName)  -- DEBUG: see what it's attempting
                      
-                     upgradeRemote:FireServer(unpack(args))
-                     task.wait(0.4)  -- FASTER: 17×0.4s = ~7 min cycles
+                     treeUpgradeRemote:FireServer(upgradeName)  -- ← FIXED: Single arg (upgrade name only) like your working old GUI
+                     task.wait(0.6)  -- ← Back to 0.6s (matches your old working code)
                   end
                   
-                  task.wait(3)  -- shorter cooldown
+                  task.wait(10)  -- ← Back to 10s cooldown (matches your old working code)
                end)
                task.wait(0.5)
             end
          end)
       end
    end,
-})
-local Label = Tab:CreateLabel("                                       COIN FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
-local CollectCoinsEnabled = false
+})------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          COIN FEATURES         ")
 
-Tab:CreateToggle({
-   Name = "Collect Coins",           -- or "Auto Collect Coins" or whatever fits better
-   CurrentValue = false,
-   Flag = "CollectCoins",
-   Callback = function(Value)
-      CollectCoinsEnabled = Value
-      
-      if Value then
-         task.spawn(function()
-            while CollectCoinsEnabled do
-               pcall(function()
-                  -- Try to get the folder safely
-                  local mapEssentials = workspace:FindFirstChild("MapEssentials")
-                  if not mapEssentials then return end
-                  
-                  local spawnedFolder = mapEssentials:FindFirstChild("Spawned")
-                  if not spawnedFolder then return end
-                  
-                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-                  local collectRemote = remotes:FindFirstChild("CollectPart")
-                  if not collectRemote then return end
-                  
-                  -- Collect all current coins
-                  for _, coin in ipairs(spawnedFolder:GetChildren()) do
-                     if not CollectCoinsEnabled then return end  -- early exit if toggled off
-                     
-                     local coinName = coin.Name
-                     if coinName and #coinName > 0 then
-                        collectRemote:FireServer(coinName)
-                        task.wait(0.08)   -- small delay between fires (adjust if needed)
-                     end
-                  end
-               end)
-               
-               -- Important: wait after processing all current coins
-               -- This gives time for new coins/parts to spawn
-               task.wait(1.5)   -- ← tune this value (1–3 seconds is common)
-            end
-         end)
-      end
-      -- when Value = false → the while loop stops naturally
-   end,
+local autoCollectEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Collect Coins",
+    Default = false,
+    Callback = function(Value)
+        autoCollectEnabled = Value
+        
+        if Value then
+            task.spawn(function()
+                while autoCollectEnabled do
+                    
+                    local spawnedFolder = workspace:FindFirstChild("MapEssentials") 
+                        and workspace.MapEssentials:FindFirstChild("Spawned")
+                    
+                    if spawnedFolder then
+                        for _, coin in ipairs(spawnedFolder:GetChildren()) do
+                            local coinName = coin.Name
+                            
+                            -- Basic check: skip if name is empty or not a string/number-like
+                            if coinName and #coinName > 0 then
+                                local remotes = game:GetService("ReplicatedStorage").Remotes
+                                local collectRemote = remotes:FindFirstChild("CollectPart")
+                                
+                                if collectRemote then
+                                    collectRemote:FireServer(coinName)
+                                    task.wait(0.1)  -- small delay between each collect to avoid rate-limits/kicks
+                                end
+                            end
+                        end
+                    end
+                    
+                    task.wait(0.1) -- loop delay — adjust if coins spawn very fast/slow
+                end
+            end)
+        end
+        -- When toggle turns off, the loop just stops naturally
+    end
 })
 
-Rayfield:LoadConfiguration()
+local coinUpgradesEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Coin Upgrades",
+    Default = false,
+    Callback = function(Value)
+        coinUpgradesEnabled = Value
+        
+        if coinUpgradesEnabled then
+            task.spawn(function()
+                while coinUpgradesEnabled do
+                
+                    -- Add all your coin upgrade names here (like TreeMoreCash → CoinsMoreCash)
+                    local upgrades = {
+                        "CoinsMoreCash",
+                        "CoinsMoreXP",
+                        "CoinsFasterSpawn",
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("Upgrade")
+                    
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            "Coins",     -- category (same for all coins)
+                            upgradeName, -- specific upgrade
+                            true         -- the boolean flag
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(0.6)   -- delay between each upgrade (adjust 0.4–1.2s if needed)
+                    end
+                    
+                    task.wait(10)   -- big wait after full cycle (your original)
+                end
+            end)
+        end
+    end
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          BOOK FEATURES         ")
+
+local autoBuyBooksEnabled = false
+
+Tab:AddToggle({
+    Name = "Buy Books",
+    Default = false,
+    Callback = function(Value)
+        autoBuyBooksEnabled = Value -- Update based on toggle state
+
+        if autoBuyBooksEnabled then
+            task.spawn(function()
+                while autoBuyBooksEnabled do
+                    local args = {
+                        true
+                    }
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("BuyBook"):FireServer(unpack(args))
+                    task.wait(10)
+                end
+            end)
+        end
+    end
+})
+
+local autoReadingUpgradesEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Reading Upgrades",
+    Default = false,
+    Callback = function(Value)
+        autoReadingUpgradesEnabled = Value
+        
+        if autoReadingUpgradesEnabled then
+            task.spawn(function()
+                while autoReadingUpgradesEnabled do
+                
+                    local upgrades = {
+                        "ReadingMoreCash",
+                        "ReadingMoreXP",
+                        "ReadingMoreReadingPoints",
+                        -- add more if you find them
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("DepositUpgrade")
+                    
+                    -- Fire all upgrades in quick succession
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            upgradeName,   -- only the upgrade name
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(10) -- ← small delay between each upgrade (adjust if needed)
+                    end
+                    
+                    task.wait(30)   -- ← wait here after the full cycle (this is your repeat timer)
+                end
+            end)
+        end
+    end
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          CRYSTALIZE FEATURE         ")
+
+local CrystalizeEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Auto Crystalize",
+    Default = false,
+    Callback = function(Value)
+        CrystalizeEnabled = Value
+        
+        if CrystalizeEnabled then
+            task.spawn(function()
+                while CrystalizeEnabled do
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local crystalizeRemote = remotes:WaitForChild("Crystalize")
+                    crystalizeRemote:FireServer()
+                    task.wait(60)
+                end
+            end)
+        end
+    end
+})
+-------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          ↓↓TREEUPGRADES2↓↓         ")
+
+local crystalUpgrades = false
+
+local Toggle = Tab:AddToggle({
+    Name = "TreeUpgrades",
+    Default = false,
+    Callback = function(Value)
+        crystalUpgrades = Value
+        
+        if crystalUpgrades then
+            task.spawn(function()
+                while crystalUpgrades do
+                
+                    local tree = {
+                       "TreeCollectionBoosts",
+                       "TreeStatBoosts",
+                       "TreeMoreCrystals",
+                       "TreeKeepPrestige",
+                       "TreeAutoUpgrades",
+                       "TreeLibrarian",
+                       "TreeUnlockEnergy",
+                       "TreeSafePrestige",
+                       "TreeMoreEnergy",
+                       "TreeMoreEnergyEquips",
+                       "TreeMoreCrystals2",
+                       "TreeMoreEnergy2",
+                       "TreeUnlockDiamonds",
+                       "TreeKeepCrystalUpgrades",
+                       "TreeMoreDiamonds",
+                       "TreeSafeCrystalize",
+                       "TreeUnlockAscension",
+
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local merchantRemote = remotes:WaitForChild("TreeUpgrade")
+                    
+                    for _, tree in ipairs(tree) do
+                        local args = {
+                            tree
+                        }
+                        merchantRemote:FireServer(unpack(args))
+                        task.wait(1)
+                    end
+                    task.wait(30)
+                end
+            end)
+        end
+    end
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Tab = Window:MakeTab({
+    Name = "Auto2",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+-- Create a state variable
+local PowerEnabled = false 
+local energyCashEnabled = false
+local energyRebirthEnabled = false
+local energyReadingPointsEnabled = false
+local energyCoinsEnabled = false
+local energyXPEnabled = false
+local energyCrystalsEnabled = false
+Tab:AddLabel("                                          POWER FEATURE         ")
+Tab:AddButton({
+    Name = "Power",
+    Callback = function()
+        -- Always fire the remote command
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Power"):FireServer()
+        -- Toggle the state
+        PowerEnabled = not PowerEnabled
+        
+        if PowerEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Power On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Power On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Power Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Power off!")
+        end
+    end    
+})
+--------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          ENERGY FEATURES         ")
+local Section = Tab:AddSection({
+	Name = "toggle off before using another"
+})
+Tab:AddButton({
+    Name = "Cash",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+            "EnergyMoreCash"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCashEnabled = not energyCashEnabled
+        
+        if energyCashEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Energy Cash Activated!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Cash activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Cash Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Cash off!")
+        end
+    end    
+})
+
+Tab:AddButton({
+    Name = "Rebirth Points",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+	        "EnergyMoreRebirthPoints"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyRebirthEnabled = not energyRebirthEnabled
+        
+        if energyRebirthEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Rebirth Points On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Rebirth Points On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "Rebirth Points Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("Rebirth Points off!")
+        end
+    end    
+})
+
+Tab:AddButton({
+    Name = "MoreReadingPoints",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+            "EnergyMoreReadingPoints"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyReadingPointsEnabled = not energyReadingPointsEnabled
+        
+        if energyReadingPointsEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Reading Points On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Reading Points On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Reading Points Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Reading Points off!")
+        end
+    end    
+})
+
+Tab:AddButton({
+    Name = "MoreCoins",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+            "EnergyMoreCoins"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCoinsEnabled = not energyCoinsEnabled
+        
+        if energyCoinsEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Coins On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Coins On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Coins Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Coins off!")
+        end
+    end    
+})
+
+Tab:AddButton({
+    Name = "MoreXP",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+            "EnergyMoreXP"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyXPEnabled = not energyXPEnabled
+        
+        if energyXPEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More XP On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More XP On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More XP Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More XP off!")
+        end
+    end    
+})
+
+Tab:AddButton({
+    Name = "MoreCrystals",
+    Callback = function()
+        -- Always fire the remote command
+        local args = {
+            "EnergyMoreCrystals"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCrystalsEnabled = not energyCrystalsEnabled
+        
+        if energyCrystalsEnabled then
+            -- First click (ON state)
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Crystals On!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Crystals On!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            OrionLib:MakeNotification({
+                Name = "Status",
+                Content = "More Crystals Off!",
+                Image = "rbxassetid://4483345998",
+                Time = 3
+            })
+            print("More Crystals off!")
+        end
+    end    
+})
+-------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          DIAMOND FEATURES         ")
+local diamond = false
+
+Tab:AddToggle({
+    Name = "Diamond",
+    Default = false,
+    Callback = function(Value)
+        diamond = Value -- Update based on toggle state
+
+        if diamond then
+            task.spawn(function()
+                while diamond do
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Diamond"):FireServer()
+                    task.wait(60) -- Short delay to avoid overwhelming the server
+                end
+            end)
+        end
+    end
+})
+
+local diamondUpgradesEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Diamond Upgrades",
+    Default = false,
+    Callback = function(Value)
+        diamondUpgradesEnabled = Value
+        
+        if diamondUpgradesEnabled then
+            task.spawn(function()
+                while diamondUpgradesEnabled do
+                
+                    -- CORRECTED upgrade names - note the "Diamonds" prefix
+                    local upgrades = {
+                        "DiamondsMoreEnergy",    -- Changed from "DiamondMoreEnergy"
+                        "DiamondsMoreXP",        -- Changed from "DiamondMoreXP"
+                        "DiamondsMoreCrystals"   -- Changed from "DiamondMoreCrystals"
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local upgradeRemote = remotes:WaitForChild("Upgrade")
+                    
+                    for _, upgradeName in ipairs(upgrades) do
+                        local args = {
+                            "Diamonds",      -- category
+                            upgradeName,     -- specific upgrade
+                            true             -- boolean flag
+                        }
+                        upgradeRemote:FireServer(unpack(args))
+                        task.wait(1)  -- delay between each
+                    end
+                    
+                    task.wait(30)   -- wait after full cycle
+                end
+            end)
+        end
+    end
+})
+
+local Tab = Window:MakeTab({
+    Name = "Misc",
+    Icon = "rbxassetid://4483345998",
+    PremiumOnly = false
+})
+
+local autoPresteigeEnabled = false
+
+Tab:AddToggle({
+    Name = "Auto Prestige",
+    Default = false,
+    Callback = function(Value)
+        autoPresteigeEnabled = Value -- Update based on toggle state
+
+        if autoPresteigeEnabled then
+            task.spawn(function()
+                while autoPresteigeEnabled do
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Prestige"):FireServer()
+                    task.wait(60)
+                end
+            end)
+        end
+    end
+})
+
+local autoMerchantEnabled = false
+
+local Toggle = Tab:AddToggle({
+    Name = "Auto Buy Merchant Slots",
+    Default = false,
+    Callback = function(Value)
+        autoMerchantEnabled = Value
+        
+        if autoMerchantEnabled then
+            task.spawn(function()
+                while autoMerchantEnabled do
+                
+                    local slots = {
+                        "Slot1",
+                        "Slot2",
+                        "Slot3",
+                    }
+                    
+                    local remotes = game:GetService("ReplicatedStorage").Remotes
+                    local merchantRemote = remotes:WaitForChild("Merchant")
+                    
+                    for _, slot in ipairs(slots) do
+                        local args = {
+                            "Buy",
+                            slot
+                        }
+                        merchantRemote:FireServer(unpack(args))
+                        task.wait(1)
+                    end
+                    
+                    task.wait(15)
+                end
+            end)
+        end
+    end
+})
+-------------------------------------------------------------------------------------------------------------------------------------------------
+Tab:AddLabel("                                          FIRE FEATURES         ")
+
+local autoFireEnabled = false
+
+Tab:AddToggle({
+    Name = "Fire",
+    Default = false,
+    Callback = function(Value)
+        autoFireEnabled = Value -- Update based on toggle state
+
+        if autoFireEnabled then
+            task.spawn(function()
+                while autoFireEnabled do
+                    game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Fire"):FireServer()
+                    task.wait(60) -- Short delay to avoid overwhelming the server
+                end
+            end)
+        end
+    end
+})
+
+OrionLib:Init()
