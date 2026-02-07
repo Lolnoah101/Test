@@ -170,5 +170,100 @@ Tab:CreateToggle({
       -- When Value = false → loop stops naturally via the while condition
    end,
 })
+------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+local Label = Tab:CreateLabel("                                       TREE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local treeUpgradeEnabled = false
+
+Tab:CreateToggle({
+   Name = "Rebirth Upgrades",
+   CurrentValue = false,
+   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Callback = function(Value)
+      treeUpgradeEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while treeUpgradeEnabled do
+               pcall(function()
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local upgradeRemote = remotes:WaitForChild("Upgrade")
+                  
+                  local upgrades = {
+                     "TreeMoreCash",
+                        "TreeMoreWalkspeed",
+                        "TreeMoreXP",
+                        "TreeMoreCoins",
+                        "TreeMoreCash2",
+                        "TreeMoreCollectionRange",
+                        "TreeMoreSpawnCap",
+                        "TreeMoreSpawnBulk",
+                        "TreeRebirthBoostsCash",
+                        "TreeMoreCoins2",
+                        "TreeUnlockReading",
+                        "TreeMoreCoins3",
+                        "TreeMoreReadingPoints",
+                        "TreeMoreCash3",
+                        "TreeCheaperBooks",
+                        "TreeMoreXP2",
+                        "TreeCoinsBoostXP",
+                  }
+                  
+                  for _, upgradeName in ipairs(upgrades) do
+                     -- Stop early if toggle was turned off during the loop
+                     if not treeUpgradeEnabled then break end
+                     
+                     local args = {
+                        "TreeUpgrade",     -- category
+                        upgradeName,         -- upgrade name
+                     }
+                     
+                     upgradeRemote:FireServer(unpack(args))
+                     task.wait(0.8)          -- delay between each upgrade attempt
+                  end
+                  
+                  task.wait(10)  -- cooldown after completing one full cycle
+               end)
+               
+               -- Small safety wait in case pcall fails repeatedly
+               task.wait(0.5)
+            end
+         end)
+      end
+      -- When Value = false → loop stops naturally via the while condition
+   end,
+})
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 Rayfield:LoadConfiguration()
