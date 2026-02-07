@@ -721,9 +721,9 @@ Tab:CreateToggle({
 local diamondUpgradesEnabled = false
 
 Tab:CreateToggle({
-   Name = "Rebirth Upgrades",
+   Name = "Diamond Upgrades",
    CurrentValue = false,
-   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Flag = "DiamondUpgrades",  -- better flag name (Flag4 is too generic)
    Callback = function(Value)
       diamondUpgradesEnabled = Value
       
@@ -794,9 +794,9 @@ Tab:CreateToggle({
 local autoMerchantEnabled = false
 
 Tab:CreateToggle({
-   Name = "Rebirth Upgrades",
+   Name = "Buy Merchant Slots",
    CurrentValue = false,
-   Flag = "RebirthUpgrades",
+   Flag = "AutoBuyMerchantSlots",
    Callback = function(Value)
       autoMerchantEnabled = Value
       
