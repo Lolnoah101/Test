@@ -177,9 +177,9 @@ local Label = Tab:CreateLabel("                                       TREE FEATU
 local treeUpgradeEnabled = false
 
 Tab:CreateToggle({
-   Name = "Rebirth Upgrades",
+   Name = "Tree Unlocks",
    CurrentValue = false,
-   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Flag = "TreeUnlocks",  -- better flag name (Flag4 is too generic)
    Callback = function(Value)
       treeUpgradeEnabled = Value
       
