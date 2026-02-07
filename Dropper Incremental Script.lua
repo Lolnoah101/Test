@@ -471,7 +471,7 @@ local energyCrystalsEnabled = false
 local Label = Tab:CreateLabel("                                       ↓↓POWER FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local Button = Tab:CreateButton({
-   Name = "Button Example",
+   Name = "Cash",
    Callback = function()
    local args = {
             "EnergyMoreCash"
@@ -484,7 +484,7 @@ local Button = Tab:CreateButton({
             Rayfield:Notify({
              Title = "Energy Cash Activated!",
             Content = "Energy Cash is now enabled.",
-            Duration = 6.5,
+            Duration = 3,
             Image = 4483362458,
             
             })
@@ -494,7 +494,7 @@ local Button = Tab:CreateButton({
             Rayfield:Notify({
              Title = "Energy Cash Deactivated!",
             Content = "Energy Cash is now disabled.",
-            Duration = 6.5,
+            Duration = 3,
             Image = 4483362458,
             })
             print("Cash off!")
@@ -502,10 +502,165 @@ local Button = Tab:CreateButton({
    end,
 })
 
+local Button = Tab:CreateButton({
+   Name = "RebirthPoints",
+   Callback = function()
+   local args = {
+            "EnergyMoreRebirthPoints"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyRebirthEnabled = not energyRebirthEnabled
+        
+        if energyRebirthEnabled then
+            Rayfield:Notify({
+             Title = "Energy Rebirth Activated!",
+            Content = "Energy Rebirth is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("Rebirth activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Rebirth Deactivated!",
+            Content = "Energy Rebirth is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("Rebirth off!")
+        end
+   end,
+})
 
+local Button = Tab:CreateButton({
+   Name = "ReadingPoints",
+   Callback = function()
+   local args = {
+            "EnergyMoreReadingPoints"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyReadingPointsEnabled = not energyReadingPointsEnabled
+        
+        if energyReadingPointsEnabled then
+            Rayfield:Notify({
+             Title = "Energy Reading Points Activated!",
+            Content = "Energy Reading Points is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("Reading Points activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Reading Points Deactivated!",
+            Content = "Energy Reading Points is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("Reading Points off!")
+        end
+   end,
+})
 
+local Button = Tab:CreateButton({
+   Name = "MoreCoins",
+   Callback = function()
+   local args = {
+            "EnergyMoreCash"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCoinsEnabled = not energyCoinsEnabled
+        
+        if energyCoinsEnabled then
+            Rayfield:Notify({
+             Title = "Energy Coins Activated!",
+            Content = "Energy Coins is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("Coins activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Coins Deactivated!",
+            Content = "Energy Coins is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("Coins off!")
+        end
+   end,
+})
 
+local Button = Tab:CreateButton({
+   Name = "MoreXP",
+   Callback = function()
+   local args = {
+            "EnergyMoreXP"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyXPEnabled = not energyXPEnabled
+        
+        if energyXPEnabled then
+            Rayfield:Notify({
+             Title = "Energy XP Activated!",
+            Content = "Energy XP is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("XP activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy XP Deactivated!",
+            Content = "Energy XP is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("XP off!")
+        end
+   end,
+})
 
+local Button = Tab:CreateButton({
+   Name = "MoreCrystals",
+   Callback = function()
+   local args = {
+            "EnergyMoreCrystals"
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Energy"):FireServer(unpack(args))
+        -- Toggle the state
+        energyCrystalsEnabled = not energyCrystalsEnabled
+        
+        if energyCrystalsEnabled then
+            Rayfield:Notify({
+             Title = "Energy Crystals Activated!",
+            Content = "Energy Crystals is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("Crystals activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Crystals Deactivated!",
+            Content = "Energy Crystals is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("Crystals off!")
+        end
+   end,
+})
 
 
 Rayfield:LoadConfiguration()
