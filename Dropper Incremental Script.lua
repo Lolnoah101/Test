@@ -97,7 +97,7 @@ Tab:CreateToggle({
    end,
 })
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       REBIRTH FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local Label = Tab:CreateLabel("                                       ↓↓REBIRTH FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local autoRebirthEnabled = false
 local autoRebirth2Enabled = false
@@ -171,7 +171,7 @@ Tab:CreateToggle({
    end,
 })
 ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       TREE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local Label = Tab:CreateLabel("                                       ↓↓TREE FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local treeUpgradeEnabled = false
 
@@ -216,7 +216,7 @@ Tab:CreateToggle({
       end
    end,
 })
-local Label = Tab:CreateLabel("                                       COIN FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local Label = Tab:CreateLabel("                                       ↓↓COIN FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 local CollectCoinsEnabled = false
 
 Tab:CreateToggle({
@@ -307,7 +307,7 @@ Tab:CreateToggle({
    end,
 })
 -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       BOOK FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local Label = Tab:CreateLabel("                                       ↓↓BOOK FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local autoBuyBooksEnabled = false
 
@@ -375,7 +375,7 @@ Tab:CreateToggle({
    end,
 })
 ------------------------------------------------------------------------------------------------------------------------------------------------
-local Label = Tab:CreateLabel("                                       CRYSTALIZE FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+local Label = Tab:CreateLabel("                                       ↓↓CRYSTALIZE FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local CrystalizeEnabled = false
 
@@ -469,6 +469,37 @@ local energyXPEnabled = false
 local energyCrystalsEnabled = false
 
 local Label = Tab:CreateLabel("                                       ↓↓POWER FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local Button = Tab:CreateButton({
+   Name = "Power",
+   Callback = function()
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("Power"):FireServer()
+        -- Toggle the state
+        PowerEnabled = not PowerEnabled
+        
+        if PowerEnabled then
+            Rayfield:Notify({
+             Title = "Energy Cash Activated!",
+            Content = "Energy Cash is now enabled.",
+            Duration = 3,
+            Image = 4483362458,
+            
+            })
+            print("Cash activated!")
+        else
+            -- Second click (OFF state) - Still fires the command, just different message
+            Rayfield:Notify({
+             Title = "Energy Cash Deactivated!",
+            Content = "Energy Cash is now disabled.",
+            Duration = 3,
+            Image = 4483362458,
+            })
+            print("Cash off!")
+        end
+   end,
+})
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       ↓↓ENERGY FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
 
 local Button = Tab:CreateButton({
    Name = "Cash",
@@ -661,6 +692,38 @@ local Button = Tab:CreateButton({
         end
    end,
 })
+------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       ↓↓DIAMOND FEATURES↓↓         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+Tab:CreateToggle({
+   Name = "Diamond",
+   CurrentValue = false,
+   Flag = "Diamond",
+   Callback = function(Value)
+      autoClickEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoClickEnabled do
+               pcall(function()
+                  game:GetService("ReplicatedStorage")
+                     :WaitForChild("Remotes")
+                     :WaitForChild("Diamond")
+                     :FireServer()
+               end)
+               task.wait(60)   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
+   end,
+})
+
+local diamondUpgradesEnabled = false
+
+
+
+
+
 
 
 Rayfield:LoadConfiguration()
