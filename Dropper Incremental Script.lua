@@ -350,30 +350,28 @@ Tab:CreateToggle({
          task.spawn(function()
             while autoReadingUpgradesEnabled do
                pcall(function()
-                    local upgrades = {
-                        "ReadingMoreCash",
-                        "ReadingMoreXP",
-                        "ReadingMoreReadingPoints",
-                        -- add more if you find them
-                    }
-                    
-                    local remotes = game:GetService("ReplicatedStorage").Remotes
-                    local upgradeRemote = remotes:WaitForChild("DepositUpgrade")
-                    
-                    -- Fire all upgrades in quick succession
-                    for _, upgradeName in ipairs(upgrades) do
-                        local args = {
-                            upgradeName,   -- only the upgrade name
-                        }
-                        upgradeRemote:FireServer(unpack(args))
-                        task.wait(10) -- ← small delay between each upgrade (adjust if needed)
-                    end
-                    
-                    task.wait(30)   -- ← wait here after the full cycle (this is your repeat timer)
-                end
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local upgradeRemote = remotes:WaitForChild("DepositUpgrade")  -- confirm this is correct!
+                  
+                  local upgrades = {
+                     "ReadingMoreCash",
+                     "ReadingMoreXP",
+                     "ReadingMoreReadingPoints",
+                     -- "ReadingMoreSomething", -- add more when you discover them
+                  }
+                  
+                  for _, upgradeName in ipairs(upgrades) do
+                     if not autoReadingUpgradesEnabled then break end
+                     
+                     upgradeRemote:FireServer(upgradeName)    -- only name (like TreeUpgrade style)
+                     task.wait(1)                           -- ← much faster, adjust 0.8–2.5
+                  end
+               end)
+               
+               task.wait(10)  -- ← shorter cycle cooldown (was 30s → too slow for testing)
             end
          end)
-      end)
+      end
    end,
 })
 Rayfield:LoadConfiguration()
