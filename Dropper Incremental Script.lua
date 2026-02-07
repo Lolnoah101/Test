@@ -567,7 +567,7 @@ local Button = Tab:CreateButton({
 })
 
 local Button = Tab:CreateButton({
-   Name = "MoreCoins",
+   Name = "EnergyMoreCoins",
    Callback = function()
    local args = {
             "EnergyMoreCash"
