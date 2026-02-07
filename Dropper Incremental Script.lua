@@ -306,5 +306,35 @@ Tab:CreateToggle({
       -- when Value = false → the while loop stops naturally
    end,
 })
+-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+local Label = Tab:CreateLabel("                                       BOOK FEATURES         ", 11902680347, false) -- Title, Icon, Color, IgnoreTheme
+
+local autoBuyBooksEnabled = false
+
+Tab:CreateToggle({
+   Name = "Auto Click",
+   CurrentValue = false,
+   Flag = "Flag1",
+   Callback = function(Value)
+      autoBuyBooksEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoBuyBooksEnabled do
+               pcall(function()
+                    local args = {
+                        true
+                    }
+                  game:GetService("ReplicatedStorage")
+                     :WaitForChild("Remotes")
+                     :WaitForChild("DropperClick")
+                     :FireServer(unpack(args))
+               end)
+               task.wait(10)   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
+   end,
+})
 
 Rayfield:LoadConfiguration()
