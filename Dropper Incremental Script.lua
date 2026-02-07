@@ -796,7 +796,7 @@ local autoMerchantEnabled = false
 Tab:CreateToggle({
    Name = "Rebirth Upgrades",
    CurrentValue = false,
-   Flag = "RebirthUpgrades",  -- better flag name (Flag4 is too generic)
+   Flag = "RebirthUpgrades",
    Callback = function(Value)
       autoMerchantEnabled = Value
       
@@ -804,34 +804,22 @@ Tab:CreateToggle({
          task.spawn(function()
             while autoMerchantEnabled do
                pcall(function()
-                  local slots = {
-                        "Slot1",
-                        "Slot2",
-                        "Slot3",
-                    }
-                    
-                    local remotes = game:GetService("ReplicatedStorage").Remotes
-                    local merchantRemote = remotes:WaitForChild("Merchant")
-                    
-                    for _, slot in ipairs(slots) do
-                        local args = {
-                            "Buy",
-                            slot
-                        }
-                        merchantRemote:FireServer(unpack(args))
-                        task.wait(1)
-                    end
-                    task.wait(10)  -- cooldown after completing one full cycle
-                end)
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local merchantRemote = remotes:WaitForChild("Merchant")
+                  
+                  local slots = {"Slot1", "Slot2", "Slot3"}
+                  
+                  for _, slot in ipairs(slots) do
+                     merchantRemote:FireServer("Buy", slot)
+                     task.wait(1)
+                  end
+                  
+                  task.wait(10)
+               end)
+            end
          end)
       end
-      -- When Value = false → loop stops naturally via the while condition
    end,
 })
-
-
-
-
-
 
 Rayfield:LoadConfiguration()
