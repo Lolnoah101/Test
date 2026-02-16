@@ -36,73 +36,36 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local AutoCollectEnabled = false
+local SpamCollectEnabled = false
 
 Tab:CreateToggle({
-   Name = "Auto Collect Leaves",
+   Name = "Spam Collect Leaves",
    CurrentValue = false,
-   Flag = "AutoCollectLeaves",
+   Flag = "SpamCollectLeaves",
    Callback = function(Value)
-      AutoCollectEnabled = Value
+      SpamCollectEnabled = Value
       
       if Value then
          task.spawn(function()
-            while AutoCollectEnabled do
+            while SpamCollectEnabled do
                pcall(function()
-                  -- Get folder safely
-                  local coinContainer = workspace:FindFirstChild("CoinContainer")
-                  if not coinContainer then return end
-                  
-                  -- Get remote safely
-                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-                  local collectFunc = remotes:FindFirstChild("LifecycleInvokeServerFunctionFunction")
-                  if not collectFunc then return end
-                  
                   local player = game.Players.LocalPlayer
-                  local session = "Session::" .. player.UserId
+                  local session = "Session::" .. player.UserId  -- Dynamic (works for you: 10455572637)
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local collectFunc = remotes:WaitForChild("LifecycleInvokeServerFunctionFunction")
                   
-                  -- Collect current numeric IDs from leaf models
-                  local ids = {}
-                  for _, leafModel in ipairs(coinContainer:GetChildren()) do
-                     if not AutoCollectEnabled then return end  -- early exit
-                     
-                     if leafModel.Name == "leaf" and leafModel:IsA("Model") then
-                        -- Try to get ID from hitpart (most common place in similar games)
-                        local hitpart = leafModel:FindFirstChild("hitpart")
-                        if hitpart and hitpart:IsA("BasePart") then
-                           -- Option A: if ID is stored as .Name (unlikely but possible)
-                           if tonumber(hitpart.Name) then
-                              table.insert(ids, tonumber(hitpart.Name))
-                           end
-                           
-                           -- Option B: check for IntValue / NumberValue inside hitpart
-                           for _, child in ipairs(hitpart:GetChildren()) do
-                              if (child:IsA("IntValue") or child:IsA("NumberValue")) and tonumber(child.Value) then
-                                 table.insert(ids, tonumber(child.Value))
-                                 break  -- usually only one per leaf
-                              end
-                           end
-                        end
-                     end
-                  end
-                  
-                  -- If we found any IDs → send batch (like your old per-coin but batched)
-                  if #ids > 0 then
-                     local args = {
-                        session,
-                        "CollectLeafBatch",
-                        ids
-                     }
-                     collectFunc:InvokeServer(unpack(args))
-                  end
+                  local args = {
+                     session,
+                     "CollectLeafBatch",
+                     {20}  -- Exact batch from your code
+                  }
+                  collectFunc:InvokeServer(unpack(args))
                end)
                
-               -- Wait after processing (like your original task.wait())
-               -- Tune this: smaller = faster collection, but more lag risk
-               task.wait(0.4)   -- 0.2–0.8 is usually good balance
+               task.wait(0.01)  -- Super fast spam (tune: 0.001–0.05)
             end
          end)
       end
-      -- Toggle off → loop stops
+      -- Toggle off → stops instantly
    end,
 })
