@@ -39,42 +39,45 @@ local Tab = Window:CreateTab({
 local CollectLeavesEnabled = false
 
 Tab:CreateToggle({
-   Name = "Toggle Example",
-    Description = nil,
-    CurrentValue = false,
-    Callback = function(Value)
-      CollectLeavesEnabled = Value   -- Updated variable name
+   Name = "Auto Collect Leaves",     -- Clear & descriptive
+   CurrentValue = false,
+   Flag = "AutoCollectLeaves",
+   Callback = function(Value)
+      AutoCollectLeavesEnabled = Value
       
       if Value then
          task.spawn(function()
-            while CollectLeavesEnabled do
+            local player = game.Players.LocalPlayer
+            local session = "Session::" .. player.UserId  -- ✅ Dynamic session from your UserId!
+            local coinContainer = workspace:WaitForChild("CoinContainer")
+            local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+            local collectRemote = remotes:WaitForChild("LifecycleInvokeServerFunctionFunction")
+            
+            while AutoCollectLeavesEnabled do
                pcall(function()
-                  -- ✅ NEW PATH: workspace.CoinContainer (leafs inside)
-                  local coinContainer = workspace:WaitForChild("CoinContainer")
-                  if not coinContainer then return end
+                  local ids = {}
                   
-                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-                  local collectRemote = remotes:FindFirstChild("CollectPart")
-                  if not collectRemote then return end
-                  
-                  -- Collect all current leaves/coins
+                  -- ✅ Collect ALL numeric IDs from leaf names in CoinContainer
                   for _, leaf in ipairs(coinContainer:GetChildren()) do
-                     if not CollectLeavesEnabled then return end  -- early exit if toggled off
-                     
-                     local leafName = leaf.Name
-                     if leafName and #leafName > 0 and leaf.Parent then  -- Extra safety: check exists
-                        pcall(function()  -- pcall per fire (safer)
-                           collectRemote:FireServer(leafName)
-                        end)
-                        task.wait(0.03)  -- Tiny delay between fires (tune: 0.01–0.1)
+                     if leaf.Name:match("^%d+$") then  -- Only numeric names (e.g., "155")
+                        table.insert(ids, tonumber(leaf.Name))
                      end
+                  end
+                  
+                  if #ids > 0 then
+                     local args = {
+                        session,
+                        "CollectLeafBatch",
+                        ids  -- ✅ Batch ALL at once (efficient!)
+                     }
+                     collectRemote:InvokeServer(unpack(args))
                   end
                end)
                
-               -- Wait for new leaves to spawn
-               task.wait(0.5)  -- Tune: 0.2–2 seconds based on spawn rate
+               task.wait(0.3)  -- Tune: 0.1–1s (fast respawn detection)
             end
          end)
       end
+      -- Toggle OFF → stops instantly
    end,
 })
