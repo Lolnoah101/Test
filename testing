@@ -36,73 +36,128 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local Toggle = Tab:CreateToggle({
-    Name = "Toggle Example",
+local autoClickEnabled = false 
+
+Tab:CreateToggle({
+   Name = "Toggle Example",
     Description = nil,
     CurrentValue = false,
     Callback = function(Value)
-        -- The function that takes place when the toggle is switched
-        -- The variable (Value) is a boolean on whether the toggle is true or false
-    end
-}, "Toggle") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-local Toggle = Tab:CreateToggle({
-    Name = "Toggle Example",
-    Description = nil,
-    CurrentValue = false,
-    Callback = function(Value)
-        -- The function that takes place when the toggle is switched
-        -- The variable (Value) is a boolean on whether the toggle is true or false
-    end
-}, "Toggle") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-local Toggle = Tab:CreateToggle({
-    Name = "Toggle Example",
-    Description = nil,
-    CurrentValue = false,
-    Callback = function(Value)
-        -- The function that takes place when the toggle is switched
-        -- The variable (Value) is a boolean on whether the toggle is true or false
-    end
-}, "Toggle") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-Tab:SectionDivider()
-
-local Toggle = Tab:CreateToggle({
-    Name = "Toggle Example",
-    Description = nil,
-    CurrentValue = false,
-    Callback = function(Value)
-        -- The function that takes place when the toggle is switched
-        -- The variable (Value) is a boolean on whether the toggle is true or false
-    end
-}, "Toggle") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-local Toggle = Tab:CreateToggle({
-    Name = "Toggle Example",
-    Description = nil,
-    CurrentValue = false,
-    Callback = function(Value)
-        -- The function that takes place when the toggle is switched
-        -- The variable (Value) is a boolean on whether the toggle is true or false
-    end
-}, "Toggle") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-local Dropdown = Tab:CreateDropdown({
-    Name = "Dropdown Example",
-    Description = nil,
-    Options = {"Option 1","Option 2"},
-    CurrentOption = {"Option 1"},
-    MultipleOptions = false,
-    SpecialType = nil,
-    Callback = function(Options)
-        -- The function that takes place when the selected option is changed
-        -- If MultipleOptions is true then The variable (Options) is a table of strings for the current selected options. Else, it is a string of the currentoption
-    end
-}, "Dropdown") -- A flag is the identifier for the configuration file, make sure every element has a different flag if you're using configuration saving to ensure no overlaps
-
-Window:CreateHomeTab({
-    SupportedExecutors = {}, -- A Table Of Executors Your Script Supports. Add strings of the executor names for each executor.
-    DiscordInvite = "1234", -- The Discord Invite Link. Do Not Include discord.gg/ | Only Include the code.
-    Icon = 1, -- By Default, The Icon Is The Home Icon. If You would like to change it to dashboard, replace the interger with 2
+      autoClickEnabled = Value
+      
+      if Value then
+         task.spawn(function()
+            while autoClickEnabled do
+               pcall(function()
+                  game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("_Index"):WaitForChild("sleitnick_knit@1.5.1"):WaitForChild("knit"):WaitForChild("Services"):WaitForChild("ClickService"):WaitForChild("RF"):WaitForChild("Click"):InvokeServer()
+               end)
+               task.wait()   -- very fast – use task.wait(0.05) if too aggressive
+            end
+         end)
+      end
+   end,
 })
+
+-- ────────────────────────────────────────────────────────────────
+-- Enemy Teleport Dropdown + Refresh (add this after your toggle)
+-- ────────────────────────────────────────────────────────────────
+
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
+local enemyDropdown = nil
+local currentEnemyNames = {}
+
+-- Helper: Get current list of enemy names
+local function getEnemyNames()
+    local folder = workspace:FindFirstChild("MobSpawns")
+    if not folder then return {} end
+    
+    local nomekFolder = folder:FindFirstChild("Nomek")
+    if not nomekFolder then return {} end
+    
+    local names = {}
+    for _, obj in ipairs(nomekFolder:GetChildren()) do
+        if obj:IsA("Model") then
+            -- Optional: only include models that have Humanoid + RootPart
+            if obj:FindFirstChildWhichIsA("Humanoid") and 
+               (obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart) then
+                table.insert(names, obj.Name)
+            else
+                -- If you want ALL models (even without humanoid), remove the if above
+                table.insert(names, obj.Name)
+            end
+        end
+    end
+    
+    table.sort(names)  -- alphabetical order (looks nicer)
+    return names
+end
+
+-- Function to refresh / (re)create the dropdown
+local function refreshEnemyDropdown()
+    currentEnemyNames = getEnemyNames()
+    
+    -- If dropdown already exists → try to update options
+    if enemyDropdown then
+        pcall(function()
+            enemyDropdown:SetOptions(currentEnemyNames)
+        end)
+    end
+    
+    -- If update failed or doesn't exist → create new one
+    if not enemyDropdown or not pcall(function() enemyDropdown:GetOptions() end) then
+        enemyDropdown = Tab:CreateDropdown({
+            Name = "Teleport to Enemy",
+            Description = "Select an enemy to teleport to (refresh list first)",
+            Options = currentEnemyNames,
+            CurrentOption = {},  -- nothing selected by default
+            MultipleOptions = false,
+            Flag = "EnemyTeleportDropdown",  -- unique for config saving
+            Callback = function(selected)
+                if typeof(selected) == "table" then
+                    selected = selected[1]  -- in case multiple mode is ever enabled
+                end
+                
+                if not selected or selected == "" then return end
+                
+                local nomek = workspace.MobSpawns:FindFirstChild("Nomek")
+                if not nomek then
+                    warn("Nomek folder not found")
+                    return
+                end
+                
+                local target = nomek:FindFirstChild(selected)
+                if not target then
+                    warn("Enemy not found: " .. selected)
+                    return
+                end
+                
+                local rootPart = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
+                if not rootPart then
+                    warn("No root part found on " .. selected)
+                    return
+                end
+                
+                local character = LocalPlayer.Character
+                if not character then return end
+                
+                local hrp = character:FindFirstChild("HumanoidRootPart")
+                if not hrp then return end
+                
+                -- Teleport slightly above the enemy
+                hrp.CFrame = rootPart.CFrame * CFrame.new(0, 6, 0)
+            end
+        })
+    end
+end
+
+-- Add the Refresh button
+Tab:CreateButton({
+    Name = "Refresh Enemy List",
+    Description = "Update the list of current enemies in Nomek",
+    Callback = refreshEnemyDropdown
+})
+
+-- Optional: run once when tab loads
+refreshEnemyDropdown()
