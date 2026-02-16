@@ -82,7 +82,7 @@ Tab:CreateToggle({
                local targetPart = workspace:FindFirstChild("Map")
                               and workspace.Map:FindFirstChild("WinPads")
                               and workspace.Map.WinPads:FindFirstChild("Free")
-                              and workspace.Map.WinPads.Free:FindFirstChild("10")
+                              and workspace.Map.WinPads.Free:FindFirstChild("60")
                
                if not targetPart or not targetPart:IsA("BasePart") then return end
                
