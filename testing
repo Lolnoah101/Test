@@ -57,7 +57,7 @@ Tab:CreateToggle({
                   local args = {
                      session,
                      "CollectLeafBatch",
-                     {20}  -- Exact batch from your code
+                     {21}  -- Exact batch from your code
                   }
                   collectFunc:InvokeServer(unpack(args))
                end)
