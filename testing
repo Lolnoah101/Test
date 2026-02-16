@@ -36,48 +36,54 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local CollectLeavesEnabled = false
+local AutoCollectLeavesTeleportEnabled = false
 
 Tab:CreateToggle({
-   Name = "Auto Collect Leaves",     -- Clear & descriptive
+   Name = "Auto Collect Leaves (Teleport)",  -- Uses TOUCH triggers – 100% reliable!
    CurrentValue = false,
-   Flag = "AutoCollectLeaves",
+   Flag = "AutoCollectLeavesTeleport",
    Callback = function(Value)
-      AutoCollectLeavesEnabled = Value
+      AutoCollectLeavesTeleportEnabled = Value
       
       if Value then
          task.spawn(function()
             local player = game.Players.LocalPlayer
-            local session = "Session::" .. player.UserId  -- ✅ Dynamic session from your UserId!
-            local coinContainer = workspace:WaitForChild("CoinContainer")
-            local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
-            local collectRemote = remotes:WaitForChild("LifecycleInvokeServerFunctionFunction")
+            local character = player.Character or player.CharacterAdded:Wait()
+            local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
             
-            while AutoCollectLeavesEnabled do
+            local coinContainer = workspace:WaitForChild("CoinContainer")
+            
+            while AutoCollectLeavesTeleportEnabled do
                pcall(function()
-                  local ids = {}
+                  local hitparts = {}
                   
-                  -- ✅ Collect ALL numeric IDs from leaf names in CoinContainer
-                  for _, leaf in ipairs(coinContainer:GetChildren()) do
-                     if leaf.Name:match("^%d+$") then  -- Only numeric names (e.g., "155")
-                        table.insert(ids, tonumber(leaf.Name))
+                  -- ✅ Find ALL hitparts in current leaves
+                  for _, leafModel in ipairs(coinContainer:GetChildren()) do
+                     if leafModel.Name == "leaf" and leafModel:IsA("Model") then
+                        local hitpart = leafModel:FindFirstChild("hitpart")
+                        if hitpart and hitpart:IsA("BasePart") and hitpart.Parent then
+                           table.insert(hitparts, hitpart)
+                        end
                      end
                   end
                   
-                  if #ids > 0 then
-                     local args = {
-                        session,
-                        "CollectLeafBatch",
-                        ids  -- ✅ Batch ALL at once (efficient!)
-                     }
-                     collectRemote:InvokeServer(unpack(args))
+                  -- Teleport to each hitpart (triggers server collection!)
+                  for _, hitpart in ipairs(hitparts) do
+                     if not AutoCollectLeavesTeleportEnabled then return end
+                     
+                     -- Teleport ON TOP + slight offset to ensure touch
+                     humanoidRootPart.CFrame = hitpart.CFrame * CFrame.new(0, 3, 0)
+                     task.wait(0.05)  -- Tiny delay for touch detection
+                     
+                     -- Quick "tap" away to avoid stuck
+                     humanoidRootPart.CFrame = humanoidRootPart.CFrame * CFrame.new(0, 0, 5)
+                     task.wait(0.01)
                   end
                end)
                
-               task.wait(0.3)  -- Tune: 0.1–1s (fast respawn detection)
+               task.wait(0.2)  -- Respawn check (tune: 0.1–0.5)
             end
          end)
       end
-      -- Toggle OFF → stops instantly
    end,
 })
