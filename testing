@@ -36,134 +36,45 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local autoClickEnabled = false 
+local CollectLeavesEnabled = false
 
 Tab:CreateToggle({
    Name = "Toggle Example",
     Description = nil,
     CurrentValue = false,
     Callback = function(Value)
-      autoClickEnabled = Value
+      CollectLeavesEnabled = Value   -- Updated variable name
       
       if Value then
          task.spawn(function()
-            while autoClickEnabled do
+            while CollectLeavesEnabled do
                pcall(function()
-                  game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("_Index"):WaitForChild("sleitnick_knit@1.5.1"):WaitForChild("knit"):WaitForChild("Services"):WaitForChild("ClickService"):WaitForChild("RF"):WaitForChild("Click"):InvokeServer()
+                  -- ✅ NEW PATH: workspace.CoinContainer (leafs inside)
+                  local coinContainer = workspace:WaitForChild("CoinContainer")
+                  if not coinContainer then return end
+                  
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local collectRemote = remotes:FindFirstChild("CollectPart")
+                  if not collectRemote then return end
+                  
+                  -- Collect all current leaves/coins
+                  for _, leaf in ipairs(coinContainer:GetChildren()) do
+                     if not CollectLeavesEnabled then return end  -- early exit if toggled off
+                     
+                     local leafName = leaf.Name
+                     if leafName and #leafName > 0 and leaf.Parent then  -- Extra safety: check exists
+                        pcall(function()  -- pcall per fire (safer)
+                           collectRemote:FireServer(leafName)
+                        end)
+                        task.wait(0.03)  -- Tiny delay between fires (tune: 0.01–0.1)
+                     end
+                  end
                end)
-               task.wait()   -- very fast – use task.wait(0.05) if too aggressive
+               
+               -- Wait for new leaves to spawn
+               task.wait(0.5)  -- Tune: 0.2–2 seconds based on spawn rate
             end
          end)
       end
    end,
 })
-
--- ────────────────────────────────────────────────────────────────
--- Enemy Teleport Dropdown + Refresh (NO HumanoidRootPart REQUIRED)
--- ────────────────────────────────────────────────────────────────
-
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
-
-local enemyDropdown = nil
-local currentEnemyNames = {}
-
--- Helper: Get current list of enemy names
-local function getEnemyNames()
-    local folder = workspace:FindFirstChild("MobSpawns")
-    if not folder then return {} end
-    
-    local nomekFolder = folder:FindFirstChild("Nomek")
-    if not nomekFolder then return {} end
-    
-    local names = {}
-    for _, obj in ipairs(nomekFolder:GetChildren()) do
-        if obj:IsA("Model") then
-            -- Include any model (even without Humanoid)
-            table.insert(names, obj.Name)
-        end
-    end
-    
-    table.sort(names)  -- alphabetical
-    return names
-end
-
--- Helper: Find a good CFrame reference in the model (no HRP needed)
-local function getModelCFrameReference(model)
-    if not model or not model:IsA("Model") then return nil end
-    
-    -- Priority 1: HumanoidRootPart (if exists)
-    local hrp = model:FindFirstChild("HumanoidRootPart")
-    if hrp and hrp:IsA("BasePart") then
-        return hrp.CFrame
-    end
-    
-    -- Priority 2: PrimaryPart (if model has one set)
-    if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
-        return model.PrimaryPart.CFrame
-    end
-    
-    -- Priority 3: Find any BasePart (e.g., main body/head/torso)
-    for _, part in ipairs(model:GetDescendants()) do
-        if part:IsA("BasePart") then
-            return part.CFrame
-        end
-    end
-    
-    -- Fallback: model pivot if nothing else
-    return model:GetPivot()
-end
-
--- Refresh / (re)create dropdown
-local function refreshEnemyDropdown()
-    currentEnemyNames = getEnemyNames()
-    
-    if enemyDropdown then
-        pcall(function()
-            enemyDropdown:SetOptions(currentEnemyNames)
-        end)
-    end
-    
-    if not enemyDropdown then
-        enemyDropdown = Tab:CreateDropdown({
-            Name = "Teleport to Enemy",
-            Description = "Select an enemy → teleports to it (refresh if list outdated)",
-            Options = currentEnemyNames,
-            CurrentOption = {},
-            MultipleOptions = false,
-            Flag = "EnemyTeleportDropdown",
-            Callback = function(selected)
-                if typeof(selected) == "table" then selected = selected[1] end
-                if not selected or selected == "" then return end
-                
-                local nomek = workspace.MobSpawns:FindFirstChild("Nomek")
-                if not nomek then warn("Nomek folder missing") return end
-                
-                local targetModel = nomek:FindFirstChild(selected)
-                if not targetModel then warn("Enemy not found: " .. selected) return end
-                
-                local targetCFrame = getModelCFrameReference(targetModel)
-                if not targetCFrame then warn("No valid CFrame/part in " .. selected) return end
-                
-                local character = LocalPlayer.Character
-                if not character then return end
-                
-                local playerHrp = character:FindFirstChild("HumanoidRootPart")
-                if not playerHrp then return end
-                
-                -- Teleport slightly above the target (avoids clipping inside)
-                playerHrp.CFrame = targetCFrame * CFrame.new(0, 6, 0)
-            end
-        })
-    end
-end
-
--- Refresh button
-Tab:CreateButton({
-    Name = "Refresh Enemy List",
-    Description = "Update dropdown with current mobs in Nomek",
-    Callback = refreshEnemyDropdown
-})
-
--- Initial refresh
-refreshEnemyDropdown()
