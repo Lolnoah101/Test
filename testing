@@ -36,61 +36,73 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local AutoCollectLeavesTouchEnabled = false
+local AutoCollectEnabled = false
 
 Tab:CreateToggle({
-   Name = "Auto Collect Leaves (Touch)",  -- Pure touch simulation – NO teleport!
+   Name = "Auto Collect Leaves",
    CurrentValue = false,
-   Flag = "AutoCollectLeavesTouch",
+   Flag = "AutoCollectLeaves",
    Callback = function(Value)
-      AutoCollectLeavesTouchEnabled = Value
+      AutoCollectEnabled = Value
       
       if Value then
          task.spawn(function()
-            local player = game.Players.LocalPlayer
-            
-            -- Auto-reconnect on respawn
-            local function connectChar()
-               local character = player.Character or player.CharacterAdded:Wait()
-               local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
-               
-               while AutoCollectLeavesTouchEnabled and character.Parent do
-                  pcall(function()
-                     local coinContainer = workspace:FindFirstChild("CoinContainer")
-                     if not coinContainer then task.wait(0.5); return end
+            while AutoCollectEnabled do
+               pcall(function()
+                  -- Get folder safely
+                  local coinContainer = workspace:FindFirstChild("CoinContainer")
+                  if not coinContainer then return end
+                  
+                  -- Get remote safely
+                  local remotes = game:GetService("ReplicatedStorage"):WaitForChild("Remotes")
+                  local collectFunc = remotes:FindFirstChild("LifecycleInvokeServerFunctionFunction")
+                  if not collectFunc then return end
+                  
+                  local player = game.Players.LocalPlayer
+                  local session = "Session::" .. player.UserId
+                  
+                  -- Collect current numeric IDs from leaf models
+                  local ids = {}
+                  for _, leafModel in ipairs(coinContainer:GetChildren()) do
+                     if not AutoCollectEnabled then return end  -- early exit
                      
-                     local hitparts = {}
-                     
-                     -- Collect ALL valid hitparts
-                     for _, leafModel in ipairs(coinContainer:GetChildren()) do
-                        if leafModel.Name == "leaf" and leafModel:IsA("Model") then
-                           local hitpart = leafModel:FindFirstChild("hitpart")
-                           if hitpart and hitpart:IsA("BasePart") and hitpart.Parent then
-                              table.insert(hitparts, hitpart)
+                     if leafModel.Name == "leaf" and leafModel:IsA("Model") then
+                        -- Try to get ID from hitpart (most common place in similar games)
+                        local hitpart = leafModel:FindFirstChild("hitpart")
+                        if hitpart and hitpart:IsA("BasePart") then
+                           -- Option A: if ID is stored as .Name (unlikely but possible)
+                           if tonumber(hitpart.Name) then
+                              table.insert(ids, tonumber(hitpart.Name))
+                           end
+                           
+                           -- Option B: check for IntValue / NumberValue inside hitpart
+                           for _, child in ipairs(hitpart:GetChildren()) do
+                              if (child:IsA("IntValue") or child:IsA("NumberValue")) and tonumber(child.Value) then
+                                 table.insert(ids, tonumber(child.Value))
+                                 break  -- usually only one per leaf
+                              end
                            end
                         end
                      end
-                     
-                     -- 🔥 Simulate TOUCH on each (triggers server collection!)
-                     for _, hitpart in ipairs(hitparts) do
-                        if not AutoCollectLeavesTouchEnabled then return end
-                        
-                        -- Touch START
-                        firetouchinterest(humanoidRootPart, hitpart, 0)
-                        task.wait(0.01)  -- Micro-delay for server register
-                        
-                        -- Touch END
-                        firetouchinterest(humanoidRootPart, hitpart, 1)
-                     end
-                  end)
+                  end
                   
-                  task.wait(0.15)  -- Scan rate (tune: 0.1–0.3 for respawns)
-               end
+                  -- If we found any IDs → send batch (like your old per-coin but batched)
+                  if #ids > 0 then
+                     local args = {
+                        session,
+                        "CollectLeafBatch",
+                        ids
+                     }
+                     collectFunc:InvokeServer(unpack(args))
+                  end
+               end)
+               
+               -- Wait after processing (like your original task.wait())
+               -- Tune this: smaller = faster collection, but more lag risk
+               task.wait(0.4)   -- 0.2–0.8 is usually good balance
             end
-            
-            connectChar()  -- Start
-            player.CharacterAdded:Connect(connectChar)  -- Auto-respawn
          end)
       end
+      -- Toggle off → loop stops
    end,
 })
