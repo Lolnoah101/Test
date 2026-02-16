@@ -59,7 +59,7 @@ Tab:CreateToggle({
 })
 
 -- ────────────────────────────────────────────────────────────────
--- Enemy Teleport Dropdown + Refresh (add this after your toggle)
+-- Enemy Teleport Dropdown + Refresh (NO HumanoidRootPart REQUIRED)
 -- ────────────────────────────────────────────────────────────────
 
 local Players = game:GetService("Players")
@@ -79,85 +79,91 @@ local function getEnemyNames()
     local names = {}
     for _, obj in ipairs(nomekFolder:GetChildren()) do
         if obj:IsA("Model") then
-            -- Optional: only include models that have Humanoid + RootPart
-            if obj:FindFirstChildWhichIsA("Humanoid") and 
-               (obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart) then
-                table.insert(names, obj.Name)
-            else
-                -- If you want ALL models (even without humanoid), remove the if above
-                table.insert(names, obj.Name)
-            end
+            -- Include any model (even without Humanoid)
+            table.insert(names, obj.Name)
         end
     end
     
-    table.sort(names)  -- alphabetical order (looks nicer)
+    table.sort(names)  -- alphabetical
     return names
 end
 
--- Function to refresh / (re)create the dropdown
+-- Helper: Find a good CFrame reference in the model (no HRP needed)
+local function getModelCFrameReference(model)
+    if not model or not model:IsA("Model") then return nil end
+    
+    -- Priority 1: HumanoidRootPart (if exists)
+    local hrp = model:FindFirstChild("HumanoidRootPart")
+    if hrp and hrp:IsA("BasePart") then
+        return hrp.CFrame
+    end
+    
+    -- Priority 2: PrimaryPart (if model has one set)
+    if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then
+        return model.PrimaryPart.CFrame
+    end
+    
+    -- Priority 3: Find any BasePart (e.g., main body/head/torso)
+    for _, part in ipairs(model:GetDescendants()) do
+        if part:IsA("BasePart") then
+            return part.CFrame
+        end
+    end
+    
+    -- Fallback: model pivot if nothing else
+    return model:GetPivot()
+end
+
+-- Refresh / (re)create dropdown
 local function refreshEnemyDropdown()
     currentEnemyNames = getEnemyNames()
     
-    -- If dropdown already exists → try to update options
     if enemyDropdown then
         pcall(function()
             enemyDropdown:SetOptions(currentEnemyNames)
         end)
     end
     
-    -- If update failed or doesn't exist → create new one
-    if not enemyDropdown or not pcall(function() enemyDropdown:GetOptions() end) then
+    if not enemyDropdown then
         enemyDropdown = Tab:CreateDropdown({
             Name = "Teleport to Enemy",
-            Description = "Select an enemy to teleport to (refresh list first)",
+            Description = "Select an enemy → teleports to it (refresh if list outdated)",
             Options = currentEnemyNames,
-            CurrentOption = {},  -- nothing selected by default
+            CurrentOption = {},
             MultipleOptions = false,
-            Flag = "EnemyTeleportDropdown",  -- unique for config saving
+            Flag = "EnemyTeleportDropdown",
             Callback = function(selected)
-                if typeof(selected) == "table" then
-                    selected = selected[1]  -- in case multiple mode is ever enabled
-                end
-                
+                if typeof(selected) == "table" then selected = selected[1] end
                 if not selected or selected == "" then return end
                 
                 local nomek = workspace.MobSpawns:FindFirstChild("Nomek")
-                if not nomek then
-                    warn("Nomek folder not found")
-                    return
-                end
+                if not nomek then warn("Nomek folder missing") return end
                 
-                local target = nomek:FindFirstChild(selected)
-                if not target then
-                    warn("Enemy not found: " .. selected)
-                    return
-                end
+                local targetModel = nomek:FindFirstChild(selected)
+                if not targetModel then warn("Enemy not found: " .. selected) return end
                 
-                local rootPart = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart
-                if not rootPart then
-                    warn("No root part found on " .. selected)
-                    return
-                end
+                local targetCFrame = getModelCFrameReference(targetModel)
+                if not targetCFrame then warn("No valid CFrame/part in " .. selected) return end
                 
                 local character = LocalPlayer.Character
                 if not character then return end
                 
-                local hrp = character:FindFirstChild("HumanoidRootPart")
-                if not hrp then return end
+                local playerHrp = character:FindFirstChild("HumanoidRootPart")
+                if not playerHrp then return end
                 
-                -- Teleport slightly above the enemy
-                hrp.CFrame = rootPart.CFrame * CFrame.new(0, 6, 0)
+                -- Teleport slightly above the target (avoids clipping inside)
+                playerHrp.CFrame = targetCFrame * CFrame.new(0, 6, 0)
             end
         })
     end
 end
 
--- Add the Refresh button
+-- Refresh button
 Tab:CreateButton({
     Name = "Refresh Enemy List",
-    Description = "Update the list of current enemies in Nomek",
+    Description = "Update dropdown with current mobs in Nomek",
     Callback = refreshEnemyDropdown
 })
 
--- Optional: run once when tab loads
+-- Initial refresh
 refreshEnemyDropdown()
