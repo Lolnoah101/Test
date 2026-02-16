@@ -105,20 +105,18 @@ Tab:CreateToggle({
 Tab:CreateToggle({
     Name = "Auto Playtime Rewards",
     CurrentValue = false,
-    Flag = "AutoClick",
+    Flag = "AutoClaim",
     Callback = function(Value)
-        getgenv().AutoClick = Value
+        getgenv().AutoClaim = Value
         
         if Value then
             task.spawn(function()
-                while getgenv().AutoClick do
-                    game:GetService("ReplicatedStorage")
-                        :WaitForChild("PlaytimeReward")
-                        :WaitForChild("10Wins")
-                        :FireServer()
-                    task.wait()
+                while getgenv().AutoClaim do
+                    game:GetService("ReplicatedStorage"):WaitForChild("PlaytimeReward"):WaitForChild("10Speed"):FireServer()
+                    task.wait(0.1)
                 end
             end)
         end
     end,
 })
+ 
