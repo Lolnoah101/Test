@@ -116,12 +116,12 @@ Tab:CreateToggle({
                 
                 -- ✅ List ALL reward remotes here (add more as you find them!)
                 local rewardNames = {
-                    "+10Wins",
+                    "10Wins",
                     "10Speed",   
                     "25Wins",    
-                    "+30Speed",
-                    "+60Wins",
-                    "+65Speed",
+                    "30Speed",
+                    "60Wins",
+                    "65Speed",
                 }
                 
                 while getgenv().AutoClaimAll do
