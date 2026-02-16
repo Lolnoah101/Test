@@ -94,7 +94,7 @@ Tab:CreateToggle({
             
             while AutoTouchWinPadEnabled do
                pcall(touchPad)
-               task.wait(0.1)  -- Spam rate (tune: 0.05–0.5)
+               task.wait(0.01)  -- Spam rate (tune: 0.05–0.5)
             end
          end)
       end
