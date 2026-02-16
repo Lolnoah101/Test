@@ -48,7 +48,7 @@ Tab:CreateToggle({
                 while getgenv().AutoClick do
                     game:GetService("ReplicatedStorage")
                         :WaitForChild("GiveXP")
-                        :FireServer(1)
+                        :FireServer(20)
                     
                     task.wait()           -- ← very fast
                     -- task.wait(0.05)    ← safer
