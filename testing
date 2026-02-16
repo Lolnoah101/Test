@@ -103,20 +103,42 @@ Tab:CreateToggle({
 })
 
 Tab:CreateToggle({
-    Name = "Auto Playtime Rewards",
+    Name = "Auto Claim All Rewards",
     CurrentValue = false,
-    Flag = "AutoClaim",
+    Flag = "AutoClaimAll",
     Callback = function(Value)
-        getgenv().AutoClaim = Value
+        getgenv().AutoClaimAll = Value
         
         if Value then
             task.spawn(function()
-                while getgenv().AutoClaim do
-                    game:GetService("ReplicatedStorage"):WaitForChild("PlaytimeReward"):WaitForChild("10Speed"):FireServer()
-                    task.wait(0.1)
+                local ReplicatedStorage = game:GetService("ReplicatedStorage")
+                local playtimeFolder = ReplicatedStorage:WaitForChild("PlaytimeReward")
+                
+                -- ✅ List ALL reward remotes here (add more as you find them!)
+                local rewardNames = {
+                    "+10Wins",
+                    "10Speed",   
+                    "25Wins",    
+                    "+30Speed",
+                    "+60Wins",
+                    "+65Speed",
+                }
+                
+                while getgenv().AutoClaimAll do
+                    pcall(function()
+                        -- Fire EACH reward in sequence
+                        for _, rewardName in ipairs(rewardNames) do
+                            local rewardRemote = playtimeFolder:FindFirstChild(rewardName)
+                            if rewardRemote then
+                                rewardRemote:FireServer()
+                            end
+                            task.wait(0.1)  -- Tiny delay between rewards
+                        end
+                    end)
+                    
+                    task.wait(0.5)  -- Loop delay (tune: 0.3–2s for cooldowns)
                 end
             end)
         end
     end,
 })
- 
