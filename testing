@@ -36,53 +36,60 @@ local Tab = Window:CreateTab({
     ShowTitle = true -- This will determine whether the big header text in the tab will show
 })
 
-local AutoCollectLeavesTeleportEnabled = false
+local AutoCollectLeavesTouchEnabled = false
 
 Tab:CreateToggle({
-   Name = "Auto Collect Leaves (Teleport)",  -- Uses TOUCH triggers – 100% reliable!
+   Name = "Auto Collect Leaves (Touch)",  -- Pure touch simulation – NO teleport!
    CurrentValue = false,
-   Flag = "AutoCollectLeavesTeleport",
+   Flag = "AutoCollectLeavesTouch",
    Callback = function(Value)
-      AutoCollectLeavesTeleportEnabled = Value
+      AutoCollectLeavesTouchEnabled = Value
       
       if Value then
          task.spawn(function()
             local player = game.Players.LocalPlayer
-            local character = player.Character or player.CharacterAdded:Wait()
-            local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
             
-            local coinContainer = workspace:WaitForChild("CoinContainer")
-            
-            while AutoCollectLeavesTeleportEnabled do
-               pcall(function()
-                  local hitparts = {}
-                  
-                  -- ✅ Find ALL hitparts in current leaves
-                  for _, leafModel in ipairs(coinContainer:GetChildren()) do
-                     if leafModel.Name == "leaf" and leafModel:IsA("Model") then
-                        local hitpart = leafModel:FindFirstChild("hitpart")
-                        if hitpart and hitpart:IsA("BasePart") and hitpart.Parent then
-                           table.insert(hitparts, hitpart)
+            -- Auto-reconnect on respawn
+            local function connectChar()
+               local character = player.Character or player.CharacterAdded:Wait()
+               local humanoidRootPart = character:WaitForChild("HumanoidRootPart")
+               
+               while AutoCollectLeavesTouchEnabled and character.Parent do
+                  pcall(function()
+                     local coinContainer = workspace:FindFirstChild("CoinContainer")
+                     if not coinContainer then task.wait(0.5); return end
+                     
+                     local hitparts = {}
+                     
+                     -- Collect ALL valid hitparts
+                     for _, leafModel in ipairs(coinContainer:GetChildren()) do
+                        if leafModel.Name == "leaf" and leafModel:IsA("Model") then
+                           local hitpart = leafModel:FindFirstChild("hitpart")
+                           if hitpart and hitpart:IsA("BasePart") and hitpart.Parent then
+                              table.insert(hitparts, hitpart)
+                           end
                         end
                      end
-                  end
+                     
+                     -- 🔥 Simulate TOUCH on each (triggers server collection!)
+                     for _, hitpart in ipairs(hitparts) do
+                        if not AutoCollectLeavesTouchEnabled then return end
+                        
+                        -- Touch START
+                        firetouchinterest(humanoidRootPart, hitpart, 0)
+                        task.wait(0.01)  -- Micro-delay for server register
+                        
+                        -- Touch END
+                        firetouchinterest(humanoidRootPart, hitpart, 1)
+                     end
+                  end)
                   
-                  -- Teleport to each hitpart (triggers server collection!)
-                  for _, hitpart in ipairs(hitparts) do
-                     if not AutoCollectLeavesTeleportEnabled then return end
-                     
-                     -- Teleport ON TOP + slight offset to ensure touch
-                     humanoidRootPart.CFrame = hitpart.CFrame * CFrame.new(0, 3, 0)
-                     task.wait(0.05)  -- Tiny delay for touch detection
-                     
-                     -- Quick "tap" away to avoid stuck
-                     humanoidRootPart.CFrame = humanoidRootPart.CFrame * CFrame.new(0, 0, 5)
-                     task.wait(0.01)
-                  end
-               end)
-               
-               task.wait(0.2)  -- Respawn check (tune: 0.1–0.5)
+                  task.wait(0.15)  -- Scan rate (tune: 0.1–0.3 for respawns)
+               end
             end
+            
+            connectChar()  -- Start
+            player.CharacterAdded:Connect(connectChar)  -- Auto-respawn
          end)
       end
    end,
