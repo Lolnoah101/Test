@@ -37,9 +37,9 @@ local Tab = Window:CreateTab({
 })
 
 Tab:CreateToggle({
-   Name = "Auto Click Closest Enemy",
+   Name = "Auto Click",
    CurrentValue = false,
-   Flag = "AutoClickClosest",
+   Flag = "AutoClick",
    Callback = function(Value)
       getgenv().AutoClickClosest = Value
       
@@ -103,9 +103,147 @@ Tab:CreateToggle({
                   warn("Auto-click error:", err)
                end
                
-               task.wait(0.12)  -- ≈8 clicks/sec – adjust: 0.08 = faster, 0.25 = safer
+               task.wait(0.1)  -- ≈8 clicks/sec – adjust: 0.08 = faster, 0.25 = safer
             end
          end)
       end
    end,
+})
+
+-- ╔════════════════════════════════════════════════════════════╗
+-- ║                    Enemy Teleport Dropdown + Toggle        ║
+-- ╚════════════════════════════════════════════════════════════╝
+
+local selectedTeleportId = nil  -- Stores selected enemy ID for teleport/toggle
+
+-- Function to get current valid enemy IDs (for dropdown)
+local function getEnemyIds()
+    local ids = {}
+    local enemiesFolder = workspace:FindFirstChild("_ENEMIES")
+    if not enemiesFolder then return ids end
+    
+    enemiesFolder = enemiesFolder:FindFirstChild("Client")
+    if not enemiesFolder then return ids end
+    
+    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+        if enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then
+            table.insert(ids, enemy.Name)
+        end
+    end
+    
+    return ids
+end
+
+-- Dropdown: Select enemy to teleport to
+local TeleportDropdown = Tab:CreateDropdown({
+    Name = "Select Enemy to Teleport To",
+    Description = "Pick from current enemies (used for manual/auto teleport)",
+    Options = getEnemyIds(),              -- Starts with current list
+    CurrentOption = {},                   -- None selected
+    MultipleOptions = false,
+    Flag = "TeleportEnemyDropdown",
+    
+    Callback = function(Option)
+        if typeof(Option) == "string" and #Option == 32 then
+            selectedTeleportId = Option
+            print("Selected for teleport:", selectedTeleportId)
+        else
+            selectedTeleportId = nil
+        end
+    end
+})
+
+-- Button: Instant one-time teleport to selected enemy
+Tab:CreateButton({
+    Name = "Teleport to Selected (Once)",
+    Callback = function()
+        if not selectedTeleportId then
+            print("No enemy selected! Refresh & pick one first.")
+            return
+        end
+        
+        pcall(function()
+            local enemiesFolder = workspace._ENEMIES.Client
+            local targetEnemy = enemiesFolder:FindFirstChild(selectedTeleportId)
+            if not targetEnemy then
+                print("Enemy no longer exists!")
+                return
+            end
+            
+            local player = game.Players.LocalPlayer
+            local character = player.Character
+            if not character then return end
+            
+            local hrp = character:FindFirstChild("HumanoidRootPart")
+            if not hrp then return end
+            
+            local enemyHrp = targetEnemy:FindFirstChild("HumanoidRootPart")
+                         or targetEnemy:FindFirstChildWhichIsA("BasePart")
+            if not enemyHrp then
+                print("No valid part found on enemy!")
+                return
+            end
+            
+            -- Teleport slightly behind enemy
+            hrp.CFrame = enemyHrp.CFrame * CFrame.new(0, 0, -4)
+            print("Teleported to:", selectedTeleportId)
+        end)
+    end
+})
+
+-- Refresh button: Update dropdown with new enemies
+Tab:CreateButton({
+    Name = "🔄 Refresh Enemy List",
+    Callback = function()
+        local newOptions = getEnemyIds()
+        TeleportDropdown:Refresh(newOptions, true)  -- Auto-select first if available
+        
+        if #newOptions > 0 then
+            print("Refreshed — Found " .. #newOptions .. " enemies")
+        else
+            print("No enemies found!")
+        end
+    end
+})
+
+-- ╔════════════════════════════════════════════════════════════╗
+-- ║          Auto-Teleport Toggle (to Selected Enemy)          ║
+-- ╚════════════════════════════════════════════════════════════╝
+Tab:CreateToggle({
+    Name = "Auto Teleport to Selected",
+    CurrentValue = false,
+    Flag = "AutoTeleportSelected",
+    Callback = function(Value)
+        getgenv().AutoTeleportSelected = Value
+        
+        if Value then
+            task.spawn(function()
+                while getgenv().AutoTeleportSelected do
+                    pcall(function()
+                        if not selectedTeleportId then return end
+                        
+                        local enemiesFolder = workspace._ENEMIES.Client
+                        local targetEnemy = enemiesFolder:FindFirstChild(selectedTeleportId)
+                        if not targetEnemy then return end
+                        
+                        local player = game.Players.LocalPlayer
+                        local character = player.Character
+                        if not character then return end
+                        
+                        local hrp = character:FindFirstChild("HumanoidRootPart")
+                        if not hrp then return end
+                        
+                        local enemyHrp = targetEnemy:FindFirstChild("HumanoidRootPart")
+                                     or targetEnemy:FindFirstChildWhichIsA("BasePart")
+                        if enemyHrp then
+                            -- Stick to enemy (follows as it moves!)
+                            hrp.CFrame = enemyHrp.CFrame * CFrame.new(0, 0, -4)
+                        end
+                    end)
+                    
+                    task.wait(0.3)  -- Teleport rate: 0.2=fast follow, 1=less aggressive
+                end
+            end)
+        end
+    end
 })
