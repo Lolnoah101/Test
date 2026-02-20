@@ -37,55 +37,75 @@ local Tab = Window:CreateTab({
 })
 
 Tab:CreateToggle({
-   Name = "Auto Click Enemies",
+   Name = "Auto Click Closest Enemy",
    CurrentValue = false,
-   Flag = "AutoClickEnemies",
+   Flag = "AutoClickClosest",
    Callback = function(Value)
-      getgenv().AutoClickEnemies = Value
+      getgenv().AutoClickClosest = Value
       
       if Value then
          task.spawn(function()
-            while getgenv().AutoClickEnemies do
-               pcall(function()
-                  -- Safe path to enemies folder
+            local player = game.Players.LocalPlayer
+            local remotes = game:GetService("ReplicatedStorage")
+               :WaitForChild("ffrostflame_bridgenet2@1.0.0")
+               :WaitForChild("dataRemoteEvent")
+            
+            while getgenv().AutoClickClosest do
+               local success, err = pcall(function()
+                  local character = player.Character
+                  if not character then return end
+                  
+                  local hrp = character:FindFirstChild("HumanoidRootPart")
+                  if not hrp then return end
+                  
                   local enemiesFolder = workspace:FindFirstChild("_ENEMIES")
                   if not enemiesFolder then return end
                   
                   enemiesFolder = enemiesFolder:FindFirstChild("Client")
                   if not enemiesFolder then return end
                   
-                  -- Get remote
-                  local remotes = game:GetService("ReplicatedStorage")
-                     :WaitForChild("ffrostflame_bridgenet2@1.0.0")
-                     :WaitForChild("dataRemoteEvent")
+                  local closestEnemy = nil
+                  local closestDistance = math.huge  -- very large number
                   
-                  -- Click ALL current enemies (IDs from .Name)
+                  -- Find closest valid enemy
                   for _, enemy in ipairs(enemiesFolder:GetChildren()) do
-                     if not getgenv().AutoClickEnemies then return end
+                     local enemyHrp = enemy:FindFirstChild("HumanoidRootPart") 
+                                    or enemy:FindFirstChildWhichIsA("BasePart")  -- fallback
                      
-                     if enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then  -- Validate long hex ID
-                        local args = {
-                           {
-                              {
-                                 "ClickSystem",
-                                 "Execute",
-                                 enemy.Name,  -- ✅ Dynamic enemy ID
-                                 n = 3
-                              },
-                              "\002"
-                           }
-                        }
-                        remotes:FireServer(unpack(args))
+                     if enemyHrp and enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then
+                        local distance = (hrp.Position - enemyHrp.Position).Magnitude
+                        
+                        if distance < closestDistance then
+                           closestDistance = distance
+                           closestEnemy = enemy
+                        end
                      end
-                     
-                     task.wait(0.01)  -- Fast per enemy (tune if needed)
+                  end
+                  
+                  -- If we found a close enemy → click it
+                  if closestEnemy then
+                     local args = {
+                        {
+                           {
+                              "ClickSystem",
+                              "Execute",
+                              closestEnemy.Name,   -- ← uses the closest enemy's ID
+                              n = 3
+                           },
+                           "\002"
+                        }
+                     }
+                     remotes:FireServer(unpack(args))
                   end
                end)
                
-               task.wait(0.1)  -- Cycle delay (catches new enemies/responses)
+               if not success then
+                  warn("Auto-click error:", err)
+               end
+               
+               task.wait(0.12)  -- ≈8 clicks/sec – adjust: 0.08 = faster, 0.25 = safer
             end
          end)
       end
-      -- Toggle off → stops instantly
    end,
 })
