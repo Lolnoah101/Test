@@ -37,108 +37,55 @@ local Tab = Window:CreateTab({
 })
 
 Tab:CreateToggle({
-    Name = "Auto Click",
-    CurrentValue = false,
-    Flag = "AutoClick",
-    Callback = function(Value)
-        getgenv().AutoClick = Value
-        
-        if Value then
-            task.spawn(function()
-                while getgenv().AutoClick do
-                    game:GetService("ReplicatedStorage")
-                        :WaitForChild("GiveXP")
-                        :FireServer(20)
-                    
-                    task.wait()           -- ← very fast
-                    -- task.wait(0.05)    ← safer
-                    -- task.wait(0.1)     ← even more safe
-                end
-            end)
-        end
-    end,
-})
-
-local AutoTouchWinPadEnabled = false
-
-Tab:CreateToggle({
-   Name = "Auto Touch WinPad 10",
+   Name = "Auto Click Enemies",
    CurrentValue = false,
-   Flag = "AutoTouchWinPad10",
+   Flag = "AutoClickEnemies",
    Callback = function(Value)
-      AutoTouchWinPadEnabled = Value
+      getgenv().AutoClickEnemies = Value
       
       if Value then
          task.spawn(function()
-            local player = game.Players.LocalPlayer
-            
-            local function touchPad()
-               local character = player.Character
-               if not character then return end
+            while getgenv().AutoClickEnemies do
+               pcall(function()
+                  -- Safe path to enemies folder
+                  local enemiesFolder = workspace:FindFirstChild("_ENEMIES")
+                  if not enemiesFolder then return end
+                  
+                  enemiesFolder = enemiesFolder:FindFirstChild("Client")
+                  if not enemiesFolder then return end
+                  
+                  -- Get remote
+                  local remotes = game:GetService("ReplicatedStorage")
+                     :WaitForChild("ffrostflame_bridgenet2@1.0.0")
+                     :WaitForChild("dataRemoteEvent")
+                  
+                  -- Click ALL current enemies (IDs from .Name)
+                  for _, enemy in ipairs(enemiesFolder:GetChildren()) do
+                     if not getgenv().AutoClickEnemies then return end
+                     
+                     if enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then  -- Validate long hex ID
+                        local args = {
+                           {
+                              {
+                                 "ClickSystem",
+                                 "Execute",
+                                 enemy.Name,  -- ✅ Dynamic enemy ID
+                                 n = 3
+                              },
+                              "\002"
+                           }
+                        }
+                        remotes:FireServer(unpack(args))
+                     end
+                     
+                     task.wait(0.01)  -- Fast per enemy (tune if needed)
+                  end
+               end)
                
-               local humanoidRootPart = character:FindFirstChild("HumanoidRootPart")
-               if not humanoidRootPart then return end
-               
-               local targetPart = workspace:FindFirstChild("Map")
-                              and workspace.Map:FindFirstChild("WinPads")
-                              and workspace.Map.WinPads:FindFirstChild("Free")
-                              and workspace.Map.WinPads.Free:FindFirstChild("60")
-               
-               if not targetPart or not targetPart:IsA("BasePart") then return end
-               
-               -- 🔥 Fire TouchInterest (0 = start, 1 = end)
-               firetouchinterest(humanoidRootPart, targetPart, 0)
-               task.wait(0.01)
-               firetouchinterest(humanoidRootPart, targetPart, 1)
-            end
-            
-            while AutoTouchWinPadEnabled do
-               pcall(touchPad)
-               task.wait(0.01)  -- Spam rate (tune: 0.05–0.5)
+               task.wait(0.1)  -- Cycle delay (catches new enemies/responses)
             end
          end)
       end
       -- Toggle off → stops instantly
    end,
-})
-
-Tab:CreateToggle({
-    Name = "Auto Claim All Rewards",
-    CurrentValue = false,
-    Flag = "AutoClaimAll",
-    Callback = function(Value)
-        getgenv().AutoClaimAll = Value
-        
-        if Value then
-            task.spawn(function()
-                local ReplicatedStorage = game:GetService("ReplicatedStorage")
-                local playtimeFolder = ReplicatedStorage:WaitForChild("PlaytimeReward")
-                
-                -- ✅ List ALL reward remotes here (add more as you find them!)
-                local rewardNames = {
-                    "10Wins",
-                    "10Speed",   
-                    "25Wins",    
-                    "30Speed",
-                    "60Wins",
-                    "65Speed",
-                }
-                
-                while getgenv().AutoClaimAll do
-                    pcall(function()
-                        -- Fire EACH reward in sequence
-                        for _, rewardName in ipairs(rewardNames) do
-                            local rewardRemote = playtimeFolder:FindFirstChild(rewardName)
-                            if rewardRemote then
-                                rewardRemote:FireServer()
-                            end
-                            task.wait(0.1)  -- Tiny delay between rewards
-                        end
-                    end)
-                    
-                    task.wait(0.5)  -- Loop delay (tune: 0.3–2s for cooldowns)
-                end
-            end)
-        end
-    end,
 })
