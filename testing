@@ -39,7 +39,7 @@ CombatTab:CreateToggle({
             task.spawn(function()
                 while AutoM1 do
                     Attack:FireServer(Vector3.new(0, 0, 0))
-                    task.wait(0.5)
+                    task.wait(1)
                 end
             end)
         end
@@ -102,10 +102,10 @@ CombatTab:CreateToggle({
                             )
                         end
 
-                        task.wait(0.5)
+                        task.wait(0.1)
                     end
 
-                    task.wait(1)
+                    task.wait(0.5)
                 end
             end)
         end
