@@ -21,22 +21,27 @@ local Attack = Remotes.Attack
 local Skill = Remotes.Skill
 
 local AutoM1 = false
-local AutoSkill1 = false
-local AutoSkill2 = false
-local AutoSkill3 = false
-local AutoSkill4 = false
+local AutoSkill = false
+local SelectedSkill = 1
 
--- M1
+-- =========================
+-- AUTO M1
+-- =========================
+
 CombatTab:CreateToggle({
     name = "Auto M1",
     flag = "AutoM1",
+
     callback = function(value)
         AutoM1 = value
 
         if value then
             task.spawn(function()
                 while AutoM1 do
-                    Attack:FireServer(Vector3.new(0, 0, 0))
+                    Attack:FireServer(
+                        Vector3.new(0, 0, 0)
+                    )
+
                     task.wait(0.1)
                 end
             end)
@@ -44,74 +49,62 @@ CombatTab:CreateToggle({
     end,
 })
 
--- Skill 1
-CombatTab:CreateToggle({
-    name = "Auto Skill 1",
-    flag = "AutoSkill1",
+-- =========================
+-- SKILL SELECTOR
+-- =========================
+
+CombatTab:CreateDropdown({
+    name = "Select Skill",
+    flag = "SelectedSkill",
+
+    options = {
+        "Skill 1",
+        "Skill 2",
+        "Skill 3",
+        "Skill 4",
+    },
+
+    value = "Skill 1",
+
     callback = function(value)
-        AutoSkill1 = value
+        if value == "Skill 1" then
+            SelectedSkill = 1
+
+        elseif value == "Skill 2" then
+            SelectedSkill = 2
+
+        elseif value == "Skill 3" then
+            SelectedSkill = 3
+
+        elseif value == "Skill 4" then
+            SelectedSkill = 4
+        end
+    end,
+})
+
+-- =========================
+-- AUTO SKILL
+-- =========================
+
+CombatTab:CreateToggle({
+    name = "Auto Skill",
+    flag = "AutoSkill",
+
+    callback = function(value)
+        AutoSkill = value
 
         if value then
             task.spawn(function()
-                while AutoSkill1 do
-                    Skill:FireServer(1, "tap", Vector3.new(0, 0, 0))
+                while AutoSkill do
+                    Skill:FireServer(
+                        SelectedSkill,
+                        "tap",
+                        Vector3.new(0, 0, 0)
+                    )
+
                     task.wait(1)
                 end
             end)
         end
     end,
 })
-
--- Skill 2
-CombatTab:CreateToggle({
-    name = "Auto Skill 2",
-    flag = "AutoSkill2",
-    callback = function(value)
-        AutoSkill2 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill2 do
-                    Skill:FireServer(2, "tap", Vector3.new(0, 0, 0))
-                    task.wait(1)
-                end
-            end)
-        end
-    end,
-})
-
--- Skill 3
-CombatTab:CreateToggle({
-    name = "Auto Skill 3",
-    flag = "AutoSkill3",
-    callback = function(value)
-        AutoSkill3 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill3 do
-                    Skill:FireServer(3, "tap", Vector3.new(0, 0, 0))
-                    task.wait(1)
-                end
-            end)
-        end
-    end,
-})
-
--- Skill 4
-CombatTab:CreateToggle({
-    name = "Auto Skill 4",
-    flag = "AutoSkill4",
-    callback = function(value)
-        AutoSkill4 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill4 do
-                    Skill:FireServer(4, "tap", Vector3.new(0, 0, 0))
-                    task.wait(1)
-                end
-            end)
-        end
-    end,
-})   
