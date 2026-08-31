@@ -21,6 +21,7 @@ local FarmTab = Window:CreateTab({
 })
 
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
@@ -36,13 +37,13 @@ local AutoSkills = false
 local SelectedSkills = {"Skill 1"}
 local AutoFarm = false
 
--- Movement settings (from working script)
+-- Movement settings
 local distance = 5
 local selectedMode = "Above"
 local circleSpeed = 3.0
 
 local currentTarget = nil
-local followConnection = nil
+local currentTween = nil
 
 -- =========================
 -- ENEMY DETECTION
@@ -118,58 +119,59 @@ local function getClosestEnemy()
 end
 
 -- =========================
--- MOVEMENT (FROM WORKING SCRIPT)
+-- MOVEMENT WITH TWEEN
 -- =========================
-local function getTargetCFrameSnap(enemyCF)
+local function getTargetCFrame(targetPart)
     local player = LocalPlayer
     local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
 
+    local enemyPos = targetPart.Position
+    local enemyCF = targetPart.CFrame
+
     if selectedMode == "Behind" then
         local lookVector = enemyCF.LookVector
         if lookVector.Magnitude < 0.1 then
-            lookVector = (hrp.Position - enemyCF.Position).Unit
+            lookVector = (hrp.Position - enemyPos).Unit
         end
-        return CFrame.lookAt(enemyCF.Position - lookVector * distance + Vector3.new(0,2,0), enemyCF.Position)
+        local targetPos = enemyPos - lookVector * distance + Vector3.new(0,2,0)
+        return CFrame.lookAt(targetPos, enemyPos)
     elseif selectedMode == "Above" then
-        return CFrame.lookAt(enemyCF.Position + Vector3.new(0,distance,0), enemyCF.Position + Vector3.new(0,2,0))
+        -- Position above enemy head, looking DOWN at them
+        local targetPos = enemyPos + Vector3.new(0, distance, 0)
+        return CFrame.lookAt(targetPos, enemyPos)
     elseif selectedMode == "Below" then
-        return CFrame.lookAt(enemyCF.Position - Vector3.new(0,distance,0), enemyCF.Position)
+        local targetPos = enemyPos - Vector3.new(0, distance, 0)
+        return CFrame.lookAt(targetPos, enemyPos)
     end
     return nil
 end
 
-local function startFollow(targetData)
-    if not targetData or not targetData.part then return end
-    if followConnection then followConnection:Disconnect() end
-
+local function moveToTarget(targetCF)
     local player = LocalPlayer
     local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then print("[AutoFarm] No HRP"); return end
+    if not hrp then return end
 
-    print("[AutoFarm] Following", targetData.entity.Name)
-    local circleAngle = 0
+    -- Cancel any existing tween
+    if currentTween then
+        currentTween:Cancel()
+        currentTween = nil
+    end
 
-    followConnection = RunService.Heartbeat:Connect(function(dt)
-        if not targetData.part or not targetData.part.Parent or not isEntityAlive(targetData.entity) then
-            followConnection:Disconnect()
-            followConnection = nil
-            currentTarget = nil
-            return
-        end
-        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-        if not hrp then return end
+    -- Create tween info (smooth movement)
+    local tweenInfo = TweenInfo.new(
+        0.15,  -- duration
+        Enum.EasingStyle.Linear,
+        Enum.EasingDirection.Out
+    )
 
-        local targetCF
-        if selectedMode == "Circle" then
-            circleAngle = circleAngle + circleSpeed * dt
-            local x = math.cos(circleAngle) * distance
-            local z = math.sin(circleAngle) * distance
-            targetCF = CFrame.lookAt(targetData.part.Position + Vector3.new(x,1,z), targetData.part.Position)
-        else
-            targetCF = getTargetCFrameSnap(targetData.part.CFrame)
-        end
-        if targetCF then hrp.CFrame = targetCF end
+    -- Create and play tween
+    currentTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCF})
+    currentTween:Play()
+
+    -- Clear tween reference when done
+    currentTween.Completed:Connect(function()
+        currentTween = nil
     end)
 end
 
@@ -201,7 +203,7 @@ local distanceSlider = FarmTab:CreateSlider({
 })
 
 -- =========================
--- AUTO FARM TOGGLE (FROM WORKING SCRIPT)
+-- AUTO FARM TOGGLE (with Tween)
 -- =========================
 FarmTab:CreateToggle({
     name = "Auto Farm",
@@ -213,28 +215,44 @@ FarmTab:CreateToggle({
             task.spawn(function()
                 print("[AutoFarm] Enabled")
                 while getgenv().AutoFarm do
+                    -- Check if current target is still alive
                     if currentTarget and currentTarget.entity and currentTarget.entity.Parent and isEntityAlive(currentTarget.entity) then
-                        task.wait(0.5)
+                        -- Target still alive, keep moving to it
+                        local targetCF = getTargetCFrame(currentTarget.part)
+                        if targetCF then
+                            moveToTarget(targetCF)
+                        end
+                        task.wait(0.15)  -- Match tween duration
                         continue
                     end
 
+                    -- Get new target
                     local closest = getClosestEnemy()
                     if closest then
                         currentTarget = closest
                         print("[AutoFarm] New target:", closest.entity.Name)
-                        startFollow(closest)
+                        local targetCF = getTargetCFrame(closest.part)
+                        if targetCF then
+                            moveToTarget(targetCF)
+                        end
                     else
                         print("[AutoFarm] No enemies")
                         task.wait(1)
                     end
-                    task.wait(0.2)
+                    task.wait(0.15)
                 end
-                if followConnection then followConnection:Disconnect(); followConnection = nil end
+                if currentTween then
+                    currentTween:Cancel()
+                    currentTween = nil
+                end
                 currentTarget = nil
                 print("[AutoFarm] Disabled")
             end)
         else
-            if followConnection then followConnection:Disconnect(); followConnection = nil end
+            if currentTween then
+                currentTween:Cancel()
+                currentTween = nil
+            end
             currentTarget = nil
         end
     end
