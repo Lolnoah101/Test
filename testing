@@ -2,7 +2,7 @@ local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
 local Window = Rayfield:CreateWindow({
     name = "Testing",
-    subtitle = "Combat",
+    subtitle = "Combat & Farm",
     theme = "default",
 
     configuration = {
@@ -16,119 +16,275 @@ local CombatTab = Window:CreateTab({
     name = "Combat",
 })
 
+local FarmTab = Window:CreateTab({
+    name = "Farm",
+})
+
+local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+
 local Remotes = game:GetService("ReplicatedStorage").Player.Remotes.Inputs
 local Attack = Remotes.Attack
 local Skill = Remotes.Skill
 
+-- =========================
+-- GLOBAL VARIABLES
+-- =========================
 local AutoM1 = false
-local AutoSkill1 = false
-local AutoSkill2 = false
-local AutoSkill3 = false
-local AutoSkill4 = false
+local AutoSkills = false
+local SelectedSkills = {"Skill 1"}
+local AutoFarm = false
+local currentTarget = nil
 
 -- =========================
--- AUTO M1
+-- ENEMY DETECTION
 -- =========================
+local function isEntityAlive(entity)
+    if not entity or not entity.Parent then return false end
+    local humanoid = entity:FindFirstChildOfClass("Humanoid")
+    if humanoid then return humanoid.Health > 0 end
+    if entity:GetAttribute("Dead") == true then return false end
+    local healthAttr = entity:GetAttribute("Health")
+    if healthAttr and tonumber(healthAttr) then return tonumber(healthAttr) > 0 end
+    return false
+end
+
+local function getAllEnemies()
+    local enemies = {}
+    
+    -- Find the Generated_ folder
+    local generatedFolder = nil
+    for _, child in ipairs(workspace:GetChildren()) do
+        if string.find(child.Name, "Generated_") then
+            generatedFolder = child
+            break
+        end
+    end
+    
+    if not generatedFolder then
+        return enemies
+    end
+    
+    -- Get the NPCs folder
+    local npcsFolder = generatedFolder:FindFirstChild("NPCs")
+    if not npcsFolder then
+        return enemies
+    end
+    
+    -- Get all alive enemies
+    for _, enemy in ipairs(npcsFolder:GetChildren()) do
+        if isEntityAlive(enemy) then
+            table.insert(enemies, enemy)
+        end
+    end
+    
+    return enemies
+end
+
+local function hasAliveTargets()
+    return #getAllEnemies() > 0
+end
+
+local function getClosestEnemy()
+    local character = LocalPlayer.Character
+    if not character then return nil end
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+
+    local enemies = getAllEnemies()
+    local closest = nil
+    local closestDist = math.huge
+
+    for _, enemy in ipairs(enemies) do
+        local root = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChildWhichIsA("BasePart")
+        if root then
+            local dist = (hrp.Position - root.Position).Magnitude
+            if dist < closestDist then
+                closestDist = dist
+                closest = { part = root, entity = enemy }
+            end
+        end
+    end
+    return closest
+end
+
+-- =========================
+-- MOVEMENT HELPERS
+-- =========================
+local function getLocalHRP()
+    local char = LocalPlayer.Character
+    return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local distance = 5
+local selectedMode = "Above"
+local circleSpeed = 3.0
+local circleAngle = 0
+
+-- =========================
+-- FARM TAB
+-- =========================
+FarmTab:CreateSection({ name = "Movement Settings" })
+
+local modeDropdown = FarmTab:CreateDropdown({
+    name = "Farm Method",
+    options = {"Behind", "Above", "Below", "Circle"},
+    value = "Above",
+    flag = "FarmMode",
+
+    callback = function(value)
+        selectedMode = value
+    end,
+})
+
+local distanceSlider = FarmTab:CreateSlider({
+    name = "Farm Distance",
+    range = {1, 20},
+    value = 5,
+    flag = "FarmDistance",
+
+    callback = function(value)
+        distance = value
+    end,
+})
+
+-- =========================
+-- AUTO FARM TOGGLE
+-- =========================
+FarmTab:CreateToggle({
+    name = "Auto Farm",
+    flag = "AutoFarm",
+
+    callback = function(value)
+        AutoFarm = value
+        if not value then
+            currentTarget = nil
+        end
+    end,
+})
+
+-- =========================
+-- COMBAT TAB
+-- =========================
+CombatTab:CreateSection({ name = "Auto Combat" })
+
+-- Auto M1
 CombatTab:CreateToggle({
     name = "Auto M1",
     flag = "AutoM1",
 
     callback = function(value)
         AutoM1 = value
-
-        if value then
-            task.spawn(function()
-                while AutoM1 do
-                    Attack:FireServer(Vector3.new(0, 0, 0))
-                    task.wait(0.1)
-                end
-            end)
-        end
     end,
 })
 
--- =========================
--- AUTO SKILL 1
--- =========================
+-- Select Skills (Dropdown)
+CombatTab:CreateDropdown({
+    name = "Select Skills",
+    multiSelect = true,
+    options = {
+        "Skill 1",
+        "Skill 2",
+        "Skill 3",
+        "Skill 4",
+    },
+    value = {"Skill 1"},
+    flag = "SelectedSkills",
+
+    callback = function(selected)
+        SelectedSkills = selected
+        print("Selected skills:", table.concat(selected, ", "))
+    end,
+})
+
+-- Auto Skills Toggle
 CombatTab:CreateToggle({
-    name = "Auto Skill 1",
-    flag = "AutoSkill1",
+    name = "Auto Skills",
+    flag = "AutoSkills",
 
     callback = function(value)
-        AutoSkill1 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill1 do
-                    Skill:FireServer(1, "tap", Vector3.new(0, 0, 0))
-                    task.wait(0.1)
-                end
-            end)
-        end
+        AutoSkills = value
     end,
 })
 
 -- =========================
--- AUTO SKILL 2
+-- MAIN LOOP (Handles Farm + M1 + Skills)
 -- =========================
-CombatTab:CreateToggle({
-    name = "Auto Skill 2",
-    flag = "AutoSkill2",
-
-    callback = function(value)
-        AutoSkill2 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill2 do
-                    Skill:FireServer(2, "tap", Vector3.new(0, 0, 0))
-                    task.wait(0.1)
+task.spawn(function()
+    while true do
+        -- ===== AUTO FARM (Movement) =====
+        if AutoFarm then
+            local hrp = getLocalHRP()
+            if hrp then
+                -- Check if current target is still alive
+                if currentTarget then
+                    if not currentTarget.entity or not currentTarget.entity.Parent or not isEntityAlive(currentTarget.entity) then
+                        currentTarget = nil
+                    end
                 end
+
+                -- Get a new target if we don't have one
+                if not currentTarget then
+                    currentTarget = getClosestEnemy()
+                    if currentTarget then
+                        print("[AutoFarm] Locked onto:", currentTarget.entity.Name)
+                    end
+                end
+
+                -- Move to target if we have one
+                if currentTarget and currentTarget.part then
+                    local targetPart = currentTarget.part
+                    local targetCF
+
+                    if selectedMode == "Circle" then
+                        circleAngle = circleAngle + circleSpeed * 0.1
+                        local x = math.cos(circleAngle) * distance
+                        local z = math.sin(circleAngle) * distance
+                        targetCF = CFrame.lookAt(targetPart.Position + Vector3.new(x, 1, z), targetPart.Position)
+                    elseif selectedMode == "Behind" then
+                        local enemyCF = targetPart.CFrame
+                        local lookVector = enemyCF.LookVector
+                        if lookVector.Magnitude < 0.1 then
+                            lookVector = (hrp.Position - enemyCF.Position).Unit
+                        end
+                        targetCF = CFrame.lookAt(enemyCF.Position - lookVector * distance + Vector3.new(0, 2, 0), enemyCF.Position)
+                    elseif selectedMode == "Above" then
+                        targetCF = CFrame.lookAt(targetPart.Position + Vector3.new(0, distance, 0), targetPart.Position + Vector3.new(0, 2, 0))
+                    elseif selectedMode == "Below" then
+                        targetCF = CFrame.lookAt(targetPart.Position - Vector3.new(0, distance, 0), targetPart.Position)
+                    end
+
+                    if targetCF then
+                        hrp.CFrame = targetCF
+                    end
+                end
+            end
+        else
+            currentTarget = nil
+        end
+
+        -- ===== AUTO M1 =====
+        if AutoM1 then
+            pcall(function()
+                Attack:FireServer(Vector3.new(0, 0, 0))
             end)
         end
-    end,
-})
 
--- =========================
--- AUTO SKILL 3
--- =========================
-CombatTab:CreateToggle({
-    name = "Auto Skill 3",
-    flag = "AutoSkill3",
-
-    callback = function(value)
-        AutoSkill3 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill3 do
-                    Skill:FireServer(3, "tap", Vector3.new(0, 0, 0))
-                    task.wait(0.1)
+        -- ===== AUTO SKILLS =====
+        if AutoSkills then
+            for _, skillName in ipairs(SelectedSkills) do
+                local skillNumber = tonumber(string.match(skillName, "%d+"))
+                if skillNumber then
+                    pcall(function()
+                        Skill:FireServer(skillNumber, "tap", Vector3.new(0, 0, 0))
+                    end)
                 end
-            end)
+            end
         end
-    end,
-})
 
--- =========================
--- AUTO SKILL 4
--- =========================
-CombatTab:CreateToggle({
-    name = "Auto Skill 4",
-    flag = "AutoSkill4",
+        task.wait(0.1)
+    end
+end)
 
-    callback = function(value)
-        AutoSkill4 = value
-
-        if value then
-            task.spawn(function()
-                while AutoSkill4 do
-                    Skill:FireServer(4, "tap", Vector3.new(0, 0, 0))
-                    task.wait(0.1)
-                end
-            end)
-        end
-    end,
-})
-
-print("[Combat] Ready! Toggle M1 and/or any skill to start spamming.")
+print("[Script] Ready! Enable Auto Farm, Auto M1, and Auto Skills.")
