@@ -126,23 +126,28 @@ local function getLocalHumanoid()
     return char:FindFirstChildOfClass("Humanoid")
 end
 
+-- Completely disable physics while moving
 local function moveToPosition(targetCF)
     local hrp = getLocalHRP()
     local humanoid = getLocalHumanoid()
     
     if not hrp or not humanoid then return end
     
-    -- Disable auto-rotate to prevent snapping
+    -- Disable ALL physics
+    humanoid.PlatformStand = true
     humanoid.AutoRotate = false
     
-    -- Set the CFrame
+    -- Set position with correct orientation
     hrp.CFrame = targetCF
+end
+
+-- Re-enable physics
+local function enablePhysics()
+    local humanoid = getLocalHumanoid()
+    if not humanoid then return end
     
-    -- Re-enable auto-rotate after movement
-    task.spawn(function()
-        task.wait(0.05)
-        humanoid.AutoRotate = true
-    end)
+    humanoid.PlatformStand = false
+    humanoid.AutoRotate = true
 end
 
 local function getTargetCFrame(targetPart)
@@ -162,7 +167,7 @@ local function getTargetCFrame(targetPart)
         return CFrame.lookAt(targetPos, enemyPos)
         
     elseif selectedMode == "Above" then
-        -- Position above enemy, looking DOWN at them
+        -- Position above enemy head, looking DOWN at them
         local targetPos = enemyPos + Vector3.new(0, distance, 0)
         return CFrame.lookAt(targetPos, enemyPos)
         
@@ -215,6 +220,7 @@ FarmTab:CreateToggle({
         AutoFarm = value
         if not value then
             currentTarget = nil
+            enablePhysics()  -- Re-enable physics when turning off
         end
     end,
 })
@@ -274,6 +280,7 @@ task.spawn(function()
             if currentTarget then
                 if not currentTarget.entity or not currentTarget.entity.Parent or not isEntityAlive(currentTarget.entity) then
                     currentTarget = nil
+                    enablePhysics()  -- Re-enable physics when target dies
                 end
             end
 
@@ -282,6 +289,15 @@ task.spawn(function()
                 currentTarget = getClosestEnemy()
                 if currentTarget then
                     print("[AutoFarm] Locked onto:", currentTarget.entity.Name)
+                    -- Disable physics when we have a target
+                    local humanoid = getLocalHumanoid()
+                    if humanoid then
+                        humanoid.PlatformStand = true
+                        humanoid.AutoRotate = false
+                    end
+                else
+                    -- No enemies, re-enable physics
+                    enablePhysics()
                 end
             end
 
@@ -302,12 +318,12 @@ task.spawn(function()
                 end
 
                 if targetCF then
-                    -- Use the smooth move function
-                    moveToPosition(targetCF)
+                    local hrp = getLocalHRP()
+                    if hrp then
+                        hrp.CFrame = targetCF
+                    end
                 end
             end
-        else
-            currentTarget = nil
         end
 
         -- ===== AUTO M1 =====
