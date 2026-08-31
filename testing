@@ -22,7 +22,9 @@ local Skill = Remotes.Skill
 
 local AutoM1 = false
 local AutoSkill = false
-local SelectedSkill = 1
+local SelectedSkills = {
+    "Skill 1"
+}
 
 -- =========================
 -- AUTO M1
@@ -38,10 +40,7 @@ CombatTab:CreateToggle({
         if value then
             task.spawn(function()
                 while AutoM1 do
-                    Attack:FireServer(
-                        Vector3.new(0, 0, 0)
-                    )
-
+                    Attack:FireServer(Vector3.new(0, 0, 0))
                     task.wait(0.1)
                 end
             end)
@@ -50,12 +49,14 @@ CombatTab:CreateToggle({
 })
 
 -- =========================
--- SKILL SELECTOR
+-- MULTI-SKILL SELECTOR
 -- =========================
 
 CombatTab:CreateDropdown({
-    name = "Select Skill",
-    flag = "SelectedSkill",
+    name = "Select Skills",
+    flag = "SelectedSkills",
+
+    multiSelect = true,
 
     options = {
         "Skill 1",
@@ -64,21 +65,12 @@ CombatTab:CreateDropdown({
         "Skill 4",
     },
 
-    value = "Skill 1",
+    value = {
+        "Skill 1"
+    },
 
-    callback = function(value)
-        if value == "Skill 1" then
-            SelectedSkill = 1
-
-        elseif value == "Skill 2" then
-            SelectedSkill = 2
-
-        elseif value == "Skill 3" then
-            SelectedSkill = 3
-
-        elseif value == "Skill 4" then
-            SelectedSkill = 4
-        end
+    callback = function(selected)
+        SelectedSkills = selected
     end,
 })
 
@@ -96,13 +88,37 @@ CombatTab:CreateToggle({
         if value then
             task.spawn(function()
                 while AutoSkill do
-                    Skill:FireServer(
-                        SelectedSkill,
-                        "tap",
-                        Vector3.new(0, 0, 0)
-                    )
 
-                    task.wait(1)
+                    for _, skillName in ipairs(SelectedSkills) do
+
+                        if not AutoSkill then
+                            break
+                        end
+
+                        local skillNumber
+
+                        if skillName == "Skill 1" then
+                            skillNumber = 1
+                        elseif skillName == "Skill 2" then
+                            skillNumber = 2
+                        elseif skillName == "Skill 3" then
+                            skillNumber = 3
+                        elseif skillName == "Skill 4" then
+                            skillNumber = 4
+                        end
+
+                        if skillNumber then
+                            Skill:FireServer(
+                                skillNumber,
+                                "tap",
+                                Vector3.new(0, 0, 0)
+                            )
+                        end
+
+                        task.wait(1)
+                    end
+
+                    task.wait()
                 end
             end)
         end
