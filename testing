@@ -23,6 +23,7 @@ local FarmTab = Window:CreateTab({
 local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local TweenService = game:GetService("TweenService")
 
 local Remotes = game:GetService("ReplicatedStorage").Player.Remotes.Inputs
 local Attack = Remotes.Attack
@@ -36,6 +37,13 @@ local AutoSkills = false
 local SelectedSkills = {"Skill 1"}
 local AutoFarm = false
 local currentTarget = nil
+local isMoving = false
+
+-- Movement settings
+local distance = 5
+local selectedMode = "Above"
+local circleSpeed = 3.0
+local circleAngle = 0
 
 -- =========================
 -- ENEMY DETECTION
@@ -110,17 +118,44 @@ local function getClosestEnemy()
 end
 
 -- =========================
--- MOVEMENT HELPERS
+-- MOVEMENT HELPERS (FIXED)
 -- =========================
 local function getLocalHRP()
     local char = LocalPlayer.Character
     return char and char:FindFirstChild("HumanoidRootPart")
 end
 
-local distance = 5
-local selectedMode = "Above"
-local circleSpeed = 3.0
-local circleAngle = 0
+local function getTargetCFrame(targetPart)
+    local hrp = getLocalHRP()
+    if not hrp then return nil end
+    
+    local enemyPos = targetPart.Position
+    local enemyCF = targetPart.CFrame
+    local hrpPos = hrp.Position
+    
+    if selectedMode == "Behind" then
+        local lookVector = enemyCF.LookVector
+        if lookVector.Magnitude < 0.1 then
+            lookVector = (hrpPos - enemyPos).Unit
+        end
+        local targetPos = enemyPos - lookVector * distance + Vector3.new(0, 2, 0)
+        return CFrame.lookAt(targetPos, enemyPos)
+        
+    elseif selectedMode == "Above" then
+        -- Position above enemy, LOOKING DOWN at them
+        local targetPos = enemyPos + Vector3.new(0, distance, 0)
+        return CFrame.lookAt(targetPos, enemyPos)
+        
+    elseif selectedMode == "Below" then
+        local targetPos = enemyPos - Vector3.new(0, distance, 0)
+        return CFrame.lookAt(targetPos, enemyPos)
+        
+    elseif selectedMode == "Circle" then
+        return nil  -- Handled separately
+    end
+    
+    return nil
+end
 
 -- =========================
 -- FARM TAB
@@ -221,6 +256,7 @@ task.spawn(function()
                 if currentTarget then
                     if not currentTarget.entity or not currentTarget.entity.Parent or not isEntityAlive(currentTarget.entity) then
                         currentTarget = nil
+                        print("[AutoFarm] Target dead, finding new one...")
                     end
                 end
 
@@ -229,6 +265,9 @@ task.spawn(function()
                     currentTarget = getClosestEnemy()
                     if currentTarget then
                         print("[AutoFarm] Locked onto:", currentTarget.entity.Name)
+                    else
+                        -- No enemies, wait a bit
+                        task.wait(0.5)
                     end
                 end
 
@@ -242,21 +281,19 @@ task.spawn(function()
                         local x = math.cos(circleAngle) * distance
                         local z = math.sin(circleAngle) * distance
                         targetCF = CFrame.lookAt(targetPart.Position + Vector3.new(x, 1, z), targetPart.Position)
-                    elseif selectedMode == "Behind" then
-                        local enemyCF = targetPart.CFrame
-                        local lookVector = enemyCF.LookVector
-                        if lookVector.Magnitude < 0.1 then
-                            lookVector = (hrp.Position - enemyCF.Position).Unit
-                        end
-                        targetCF = CFrame.lookAt(enemyCF.Position - lookVector * distance + Vector3.new(0, 2, 0), enemyCF.Position)
-                    elseif selectedMode == "Above" then
-                        targetCF = CFrame.lookAt(targetPart.Position + Vector3.new(0, distance, 0), targetPart.Position + Vector3.new(0, 2, 0))
-                    elseif selectedMode == "Below" then
-                        targetCF = CFrame.lookAt(targetPart.Position - Vector3.new(0, distance, 0), targetPart.Position)
+                    else
+                        targetCF = getTargetCFrame(targetPart)
                     end
 
                     if targetCF then
-                        hrp.CFrame = targetCF
+                        -- Smooth movement: only update if the position is significantly different
+                        local currentPos = hrp.Position
+                        local targetPos = targetCF.Position
+                        local dist = (currentPos - targetPos).Magnitude
+                        
+                        if dist > 0.5 then
+                            hrp.CFrame = targetCF
+                        end
                     end
                 end
             end
