@@ -20,6 +20,7 @@ local FarmTab = Window:CreateTab({
     name = "Farm",
 })
 
+local RunService = game:GetService("RunService")
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 
@@ -34,13 +35,14 @@ local AutoM1 = false
 local AutoSkills = false
 local SelectedSkills = {"Skill 1"}
 local AutoFarm = false
-local currentTarget = nil
 
--- Movement settings
+-- Movement settings (from working script)
 local distance = 5
 local selectedMode = "Above"
 local circleSpeed = 3.0
-local circleAngle = 0
+
+local currentTarget = nil
+local followConnection = nil
 
 -- =========================
 -- ENEMY DETECTION
@@ -104,7 +106,11 @@ local function getClosestEnemy()
             local dist = (hrp.Position - root.Position).Magnitude
             if dist < closestDist then
                 closestDist = dist
-                closest = { part = root, entity = enemy }
+                closest = {
+                    part = root,
+                    entity = enemy,
+                    dist = dist
+                }
             end
         end
     end
@@ -112,74 +118,59 @@ local function getClosestEnemy()
 end
 
 -- =========================
--- MOVEMENT HELPERS (FIXED)
+-- MOVEMENT (FROM WORKING SCRIPT)
 -- =========================
-local function getLocalHRP()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    return char:FindFirstChild("HumanoidRootPart")
-end
-
-local function getLocalHumanoid()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    return char:FindFirstChildOfClass("Humanoid")
-end
-
--- Completely disable physics while moving
-local function moveToPosition(targetCF)
-    local hrp = getLocalHRP()
-    local humanoid = getLocalHumanoid()
-    
-    if not hrp or not humanoid then return end
-    
-    -- Disable ALL physics
-    humanoid.PlatformStand = true
-    humanoid.AutoRotate = false
-    
-    -- Set position with correct orientation
-    hrp.CFrame = targetCF
-end
-
--- Re-enable physics
-local function enablePhysics()
-    local humanoid = getLocalHumanoid()
-    if not humanoid then return end
-    
-    humanoid.PlatformStand = false
-    humanoid.AutoRotate = true
-end
-
-local function getTargetCFrame(targetPart)
-    local hrp = getLocalHRP()
+local function getTargetCFrameSnap(enemyCF)
+    local player = LocalPlayer
+    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
     if not hrp then return nil end
-    
-    local enemyPos = targetPart.Position
-    local enemyCF = targetPart.CFrame
-    local hrpPos = hrp.Position
-    
+
     if selectedMode == "Behind" then
         local lookVector = enemyCF.LookVector
         if lookVector.Magnitude < 0.1 then
-            lookVector = (hrpPos - enemyPos).Unit
+            lookVector = (hrp.Position - enemyCF.Position).Unit
         end
-        local targetPos = enemyPos - lookVector * distance + Vector3.new(0, 2, 0)
-        return CFrame.lookAt(targetPos, enemyPos)
-        
+        return CFrame.lookAt(enemyCF.Position - lookVector * distance + Vector3.new(0,2,0), enemyCF.Position)
     elseif selectedMode == "Above" then
-        -- Position above enemy head, looking DOWN at them
-        local targetPos = enemyPos + Vector3.new(0, distance, 0)
-        return CFrame.lookAt(targetPos, enemyPos)
-        
+        return CFrame.lookAt(enemyCF.Position + Vector3.new(0,distance,0), enemyCF.Position + Vector3.new(0,2,0))
     elseif selectedMode == "Below" then
-        local targetPos = enemyPos - Vector3.new(0, distance, 0)
-        return CFrame.lookAt(targetPos, enemyPos)
-        
-    elseif selectedMode == "Circle" then
-        return nil
+        return CFrame.lookAt(enemyCF.Position - Vector3.new(0,distance,0), enemyCF.Position)
     end
-    
     return nil
+end
+
+local function startFollow(targetData)
+    if not targetData or not targetData.part then return end
+    if followConnection then followConnection:Disconnect() end
+
+    local player = LocalPlayer
+    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then print("[AutoFarm] No HRP"); return end
+
+    print("[AutoFarm] Following", targetData.entity.Name)
+    local circleAngle = 0
+
+    followConnection = RunService.Heartbeat:Connect(function(dt)
+        if not targetData.part or not targetData.part.Parent or not isEntityAlive(targetData.entity) then
+            followConnection:Disconnect()
+            followConnection = nil
+            currentTarget = nil
+            return
+        end
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then return end
+
+        local targetCF
+        if selectedMode == "Circle" then
+            circleAngle = circleAngle + circleSpeed * dt
+            local x = math.cos(circleAngle) * distance
+            local z = math.sin(circleAngle) * distance
+            targetCF = CFrame.lookAt(targetData.part.Position + Vector3.new(x,1,z), targetData.part.Position)
+        else
+            targetCF = getTargetCFrameSnap(targetData.part.CFrame)
+        end
+        if targetCF then hrp.CFrame = targetCF end
+    end)
 end
 
 -- =========================
@@ -210,19 +201,43 @@ local distanceSlider = FarmTab:CreateSlider({
 })
 
 -- =========================
--- AUTO FARM TOGGLE
+-- AUTO FARM TOGGLE (FROM WORKING SCRIPT)
 -- =========================
 FarmTab:CreateToggle({
     name = "Auto Farm",
     flag = "AutoFarm",
 
-    callback = function(value)
-        AutoFarm = value
-        if not value then
+    callback = function(Value)
+        getgenv().AutoFarm = Value
+        if Value then
+            task.spawn(function()
+                print("[AutoFarm] Enabled")
+                while getgenv().AutoFarm do
+                    if currentTarget and currentTarget.entity and currentTarget.entity.Parent and isEntityAlive(currentTarget.entity) then
+                        task.wait(0.5)
+                        continue
+                    end
+
+                    local closest = getClosestEnemy()
+                    if closest then
+                        currentTarget = closest
+                        print("[AutoFarm] New target:", closest.entity.Name)
+                        startFollow(closest)
+                    else
+                        print("[AutoFarm] No enemies")
+                        task.wait(1)
+                    end
+                    task.wait(0.2)
+                end
+                if followConnection then followConnection:Disconnect(); followConnection = nil end
+                currentTarget = nil
+                print("[AutoFarm] Disabled")
+            end)
+        else
+            if followConnection then followConnection:Disconnect(); followConnection = nil end
             currentTarget = nil
-            enablePhysics()  -- Re-enable physics when turning off
         end
-    end,
+    end
 })
 
 -- =========================
@@ -236,7 +251,7 @@ CombatTab:CreateToggle({
     flag = "AutoM1",
 
     callback = function(value)
-        AutoM1 = value
+        getgenv().AutoM1 = value
     end,
 })
 
@@ -265,76 +280,24 @@ CombatTab:CreateToggle({
     flag = "AutoSkills",
 
     callback = function(value)
-        AutoSkills = value
+        getgenv().AutoSkills = value
     end,
 })
 
 -- =========================
--- MAIN LOOP
+-- COMBAT LOOP (M1 + Skills)
 -- =========================
 task.spawn(function()
     while true do
-        -- ===== AUTO FARM =====
-        if AutoFarm then
-            -- Check if current target is still alive
-            if currentTarget then
-                if not currentTarget.entity or not currentTarget.entity.Parent or not isEntityAlive(currentTarget.entity) then
-                    currentTarget = nil
-                    enablePhysics()  -- Re-enable physics when target dies
-                end
-            end
-
-            -- Get a new target if we don't have one
-            if not currentTarget then
-                currentTarget = getClosestEnemy()
-                if currentTarget then
-                    print("[AutoFarm] Locked onto:", currentTarget.entity.Name)
-                    -- Disable physics when we have a target
-                    local humanoid = getLocalHumanoid()
-                    if humanoid then
-                        humanoid.PlatformStand = true
-                        humanoid.AutoRotate = false
-                    end
-                else
-                    -- No enemies, re-enable physics
-                    enablePhysics()
-                end
-            end
-
-            -- Move to target if we have one
-            if currentTarget and currentTarget.part then
-                local targetCF
-                
-                if selectedMode == "Circle" then
-                    circleAngle = circleAngle + circleSpeed * 0.1
-                    local x = math.cos(circleAngle) * distance
-                    local z = math.sin(circleAngle) * distance
-                    targetCF = CFrame.lookAt(
-                        currentTarget.part.Position + Vector3.new(x, 1, z),
-                        currentTarget.part.Position
-                    )
-                else
-                    targetCF = getTargetCFrame(currentTarget.part)
-                end
-
-                if targetCF then
-                    local hrp = getLocalHRP()
-                    if hrp then
-                        hrp.CFrame = targetCF
-                    end
-                end
-            end
-        end
-
-        -- ===== AUTO M1 =====
-        if AutoM1 then
+        -- Auto M1
+        if getgenv().AutoM1 and hasAliveTargets() then
             pcall(function()
                 Attack:FireServer(Vector3.new(0, 0, 0))
             end)
         end
 
-        -- ===== AUTO SKILLS =====
-        if AutoSkills then
+        -- Auto Skills
+        if getgenv().AutoSkills and hasAliveTargets() then
             for _, skillName in ipairs(SelectedSkills) do
                 local skillNumber = tonumber(string.match(skillName, "%d+"))
                 if skillNumber then
