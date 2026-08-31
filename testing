@@ -8,9 +8,32 @@ local Window = Rayfield:CreateWindow({
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "TestingHubV3",
+        fileName = "TestingHubV4",
     },
 })
+
+--==================================================
+-- SERVICES
+--==================================================
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local LocalPlayer = Players.LocalPlayer
+
+--==================================================
+-- REMOTES
+--==================================================
+
+local Remotes = ReplicatedStorage.Player.Remotes.Inputs
+
+local Attack = Remotes.Attack
+local Skill = Remotes.Skill
+
+--==================================================
+-- TABS
+--==================================================
 
 local CombatTab = Window:CreateTab({
     name = "Combat",
@@ -20,70 +43,100 @@ local FarmTab = Window:CreateTab({
     name = "Farm",
 })
 
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local Players = game:GetService("Players")
-local LocalPlayer = Players.LocalPlayer
+--==================================================
+-- GLOBAL SETTINGS
+--==================================================
 
-local Remotes = game:GetService("ReplicatedStorage").Player.Remotes.Inputs
-local Attack = Remotes.Attack
-local Skill = Remotes.Skill
+getgenv().AutoM1 = false
+getgenv().AutoSkills = false
+getgenv().AutoFarm = false
 
--- =========================
--- GLOBAL VARIABLES
--- =========================
-local AutoM1 = false
-local AutoSkills = false
-local SelectedSkills = {"Skill 1"}
-local AutoFarm = false
+local SelectedSkills = {
+    "Skill 1"
+}
 
--- Movement settings
+--==================================================
+-- FARM SETTINGS
+--==================================================
+
 local distance = 5
 local selectedMode = "Above"
-local circleSpeed = 3.0
 
 local currentTarget = nil
-local currentTween = nil
+local bodyPosition = nil
+local bodyGyro = nil
+local farmConnection = nil
 
--- =========================
+--==================================================
 -- ENEMY DETECTION
--- =========================
+--==================================================
+
 local function isEntityAlive(entity)
-    if not entity or not entity.Parent then return false end
+    if not entity or not entity.Parent then
+        return false
+    end
+
     local humanoid = entity:FindFirstChildOfClass("Humanoid")
-    if humanoid then return humanoid.Health > 0 end
-    if entity:GetAttribute("Dead") == true then return false end
-    local healthAttr = entity:GetAttribute("Health")
-    if healthAttr and tonumber(healthAttr) then return tonumber(healthAttr) > 0 end
+
+    if humanoid then
+        return humanoid.Health > 0
+    end
+
+    if entity:GetAttribute("Dead") == true then
+        return false
+    end
+
+    local health = entity:GetAttribute("Health")
+
+    if health ~= nil then
+        local numericHealth = tonumber(health)
+
+        if numericHealth then
+            return numericHealth > 0
+        end
+    end
+
     return false
+end
+
+local function getNPCFolder()
+    for _, object in ipairs(workspace:GetChildren()) do
+        if string.find(object.Name, "Generated_") then
+
+            local npcFolder = object:FindFirstChild("NPCs")
+
+            if npcFolder then
+                return npcFolder
+            end
+        end
+    end
+
+    return nil
 end
 
 local function getAllEnemies()
     local enemies = {}
-    
-    local generatedFolder = nil
-    for _, child in ipairs(workspace:GetChildren()) do
-        if string.find(child.Name, "Generated_") then
-            generatedFolder = child
-            break
-        end
-    end
-    
-    if not generatedFolder then
+
+    local npcFolder = getNPCFolder()
+
+    if not npcFolder then
         return enemies
     end
-    
-    local npcsFolder = generatedFolder:FindFirstChild("NPCs")
-    if not npcsFolder then
-        return enemies
-    end
-    
-    for _, enemy in ipairs(npcsFolder:GetChildren()) do
+
+    for _, enemy in ipairs(npcFolder:GetChildren()) do
+
         if isEntityAlive(enemy) then
-            table.insert(enemies, enemy)
+
+            local root =
+                enemy:FindFirstChild("HumanoidRootPart")
+                or enemy:FindFirstChildWhichIsA("BasePart")
+
+            if root then
+                table.insert(enemies, enemy)
+            end
         end
     end
-    
+
     return enemies
 end
 
@@ -93,97 +146,309 @@ end
 
 local function getClosestEnemy()
     local character = LocalPlayer.Character
-    if not character then return nil end
+
+    if not character then
+        return nil
+    end
+
     local hrp = character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
 
-    local enemies = getAllEnemies()
+    if not hrp then
+        return nil
+    end
+
     local closest = nil
-    local closestDist = math.huge
+    local closestDistance = math.huge
 
-    for _, enemy in ipairs(enemies) do
-        local root = enemy:FindFirstChild("HumanoidRootPart") or enemy:FindFirstChildWhichIsA("BasePart")
-        if root then
-            local dist = (hrp.Position - root.Position).Magnitude
-            if dist < closestDist then
-                closestDist = dist
+    for _, enemy in ipairs(getAllEnemies()) do
+
+        local root =
+            enemy:FindFirstChild("HumanoidRootPart")
+            or enemy:FindFirstChildWhichIsA("BasePart")
+
+        if root and isEntityAlive(enemy) then
+
+            local distanceFromPlayer =
+                (hrp.Position - root.Position).Magnitude
+
+            if distanceFromPlayer < closestDistance then
+
+                closestDistance = distanceFromPlayer
+
                 closest = {
-                    part = root,
                     entity = enemy,
-                    dist = dist
+                    part = root,
+                    distance = distanceFromPlayer
                 }
             end
         end
     end
+
     return closest
 end
 
--- =========================
--- MOVEMENT WITH TWEEN
--- =========================
-local function getTargetCFrame(targetPart)
-    local player = LocalPlayer
-    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return nil end
+--==================================================
+-- MOVEMENT
+--==================================================
 
-    local enemyPos = targetPart.Position
-    local enemyCF = targetPart.CFrame
+local function cleanupMovement()
 
-    if selectedMode == "Behind" then
-        local lookVector = enemyCF.LookVector
-        if lookVector.Magnitude < 0.1 then
-            lookVector = (hrp.Position - enemyPos).Unit
-        end
-        local targetPos = enemyPos - lookVector * distance + Vector3.new(0,2,0)
-        return CFrame.lookAt(targetPos, enemyPos)
-    elseif selectedMode == "Above" then
-        -- Position above enemy head, looking DOWN at them
-        local targetPos = enemyPos + Vector3.new(0, distance, 0)
-        return CFrame.lookAt(targetPos, enemyPos)
-    elseif selectedMode == "Below" then
-        local targetPos = enemyPos - Vector3.new(0, distance, 0)
-        return CFrame.lookAt(targetPos, enemyPos)
+    if farmConnection then
+        farmConnection:Disconnect()
+        farmConnection = nil
     end
-    return nil
+
+    if bodyPosition then
+        bodyPosition:Destroy()
+        bodyPosition = nil
+    end
+
+    if bodyGyro then
+        bodyGyro:Destroy()
+        bodyGyro = nil
+    end
+
+    currentTarget = nil
 end
 
-local function moveToTarget(targetCF)
-    local player = LocalPlayer
-    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
+local function createMovement(hrp)
 
-    -- Cancel any existing tween
-    if currentTween then
-        currentTween:Cancel()
-        currentTween = nil
+    if not hrp then
+        return
     end
 
-    -- Create tween info (smooth movement)
-    local tweenInfo = TweenInfo.new(
-        0.15,  -- duration
-        Enum.EasingStyle.Linear,
-        Enum.EasingDirection.Out
+    if bodyPosition then
+        bodyPosition:Destroy()
+    end
+
+    if bodyGyro then
+        bodyGyro:Destroy()
+    end
+
+    bodyPosition = Instance.new("BodyPosition")
+
+    bodyPosition.Name = "AutoFarmPosition"
+    bodyPosition.MaxForce = Vector3.new(
+        100000,
+        100000,
+        100000
     )
 
-    -- Create and play tween
-    currentTween = TweenService:Create(hrp, tweenInfo, {CFrame = targetCF})
-    currentTween:Play()
+    bodyPosition.P = 10000
+    bodyPosition.D = 1000
+    bodyPosition.Position = hrp.Position
 
-    -- Clear tween reference when done
-    currentTween.Completed:Connect(function()
-        currentTween = nil
-    end)
+    bodyPosition.Parent = hrp
+
+    bodyGyro = Instance.new("BodyGyro")
+
+    bodyGyro.Name = "AutoFarmGyro"
+    bodyGyro.MaxTorque = Vector3.new(
+        100000,
+        100000,
+        100000
+    )
+
+    bodyGyro.P = 10000
+    bodyGyro.D = 1000
+    bodyGyro.CFrame = hrp.CFrame
+
+    bodyGyro.Parent = hrp
 end
 
--- =========================
--- FARM TAB
--- =========================
-FarmTab:CreateSection({ name = "Movement Settings" })
+--==================================================
+-- TARGET POSITION
+--==================================================
 
-local modeDropdown = FarmTab:CreateDropdown({
+local function getTargetPosition(targetPart)
+
+    if not targetPart or not targetPart.Parent then
+        return nil, nil
+    end
+
+    local enemyPosition = targetPart.Position
+    local targetPosition
+
+    if selectedMode == "Above" then
+
+        targetPosition =
+            enemyPosition +
+            Vector3.new(0, distance, 0)
+
+    elseif selectedMode == "Below" then
+
+        targetPosition =
+            enemyPosition -
+            Vector3.new(0, distance, 0)
+
+    elseif selectedMode == "Behind" then
+
+        local lookVector = targetPart.CFrame.LookVector
+
+        targetPosition =
+            enemyPosition -
+            lookVector * distance
+
+    elseif selectedMode == "Circle" then
+
+        local angle = os.clock() * 3
+
+        local offset = Vector3.new(
+            math.cos(angle) * distance,
+            1,
+            math.sin(angle) * distance
+        )
+
+        targetPosition =
+            enemyPosition + offset
+    end
+
+    return targetPosition, enemyPosition
+end
+
+--==================================================
+-- UPDATE FARM
+--==================================================
+
+local function updateFarm()
+
+    if not getgenv().AutoFarm then
+        return
+    end
+
+    local character = LocalPlayer.Character
+
+    if not character then
+        currentTarget = nil
+        return
+    end
+
+    local hrp =
+        character:FindFirstChild("HumanoidRootPart")
+
+    if not hrp then
+        currentTarget = nil
+        return
+    end
+
+    -- Recreate movement after respawn
+    if not bodyPosition
+        or bodyPosition.Parent ~= hrp
+        or not bodyGyro
+        or bodyGyro.Parent ~= hrp then
+
+        createMovement(hrp)
+    end
+
+    --==================================================
+    -- CURRENT TARGET
+    --==================================================
+
+    if currentTarget then
+
+        local enemy = currentTarget.entity
+
+        if not isEntityAlive(enemy) then
+            currentTarget = nil
+        else
+
+            local root =
+                enemy:FindFirstChild("HumanoidRootPart")
+                or enemy:FindFirstChildWhichIsA("BasePart")
+
+            if root then
+
+                currentTarget.part = root
+
+                local targetPosition, enemyPosition =
+                    getTargetPosition(root)
+
+                if targetPosition then
+
+                    bodyPosition.Position =
+                        targetPosition
+
+                    local direction =
+                        enemyPosition - targetPosition
+
+                    if direction.Magnitude > 0.01 then
+
+                        bodyGyro.CFrame =
+                            CFrame.lookAt(
+                                Vector3.zero,
+                                direction.Unit
+                            )
+                    end
+                end
+
+                return
+            end
+
+            currentTarget = nil
+        end
+    end
+
+    --==================================================
+    -- FIND NEW TARGET
+    --==================================================
+
+    local newTarget = getClosestEnemy()
+
+    if newTarget then
+
+        currentTarget = newTarget
+
+        print(
+            "[AutoFarm] New target:",
+            newTarget.entity.Name
+        )
+
+        local targetPosition, enemyPosition =
+            getTargetPosition(newTarget.part)
+
+        if targetPosition then
+
+            bodyPosition.Position =
+                targetPosition
+
+            local direction =
+                enemyPosition - targetPosition
+
+            if direction.Magnitude > 0.01 then
+
+                bodyGyro.CFrame =
+                    CFrame.lookAt(
+                        Vector3.zero,
+                        direction.Unit
+                    )
+            end
+        end
+    else
+
+        currentTarget = nil
+    end
+end
+
+--==================================================
+-- FARM TAB UI
+--==================================================
+
+FarmTab:CreateSection({
+    name = "Movement Settings"
+})
+
+FarmTab:CreateDropdown({
     name = "Farm Method",
-    options = {"Behind", "Above", "Below", "Circle"},
+
+    options = {
+        "Behind",
+        "Above",
+        "Below",
+        "Circle"
+    },
+
     value = "Above",
+
     flag = "FarmMode",
 
     callback = function(value)
@@ -191,10 +456,17 @@ local modeDropdown = FarmTab:CreateDropdown({
     end,
 })
 
-local distanceSlider = FarmTab:CreateSlider({
+FarmTab:CreateSlider({
     name = "Farm Distance",
+
     range = {1, 20},
+
+    increment = 1,
+
     value = 5,
+
+    suffix = " studs",
+
     flag = "FarmDistance",
 
     callback = function(value)
@@ -202,125 +474,152 @@ local distanceSlider = FarmTab:CreateSlider({
     end,
 })
 
--- =========================
--- AUTO FARM TOGGLE (with Tween)
--- =========================
 FarmTab:CreateToggle({
     name = "Auto Farm",
+
     flag = "AutoFarm",
 
-    callback = function(Value)
-        getgenv().AutoFarm = Value
-        if Value then
-            task.spawn(function()
-                print("[AutoFarm] Enabled")
-                while getgenv().AutoFarm do
-                    -- Check if current target is still alive
-                    if currentTarget and currentTarget.entity and currentTarget.entity.Parent and isEntityAlive(currentTarget.entity) then
-                        -- Target still alive, keep moving to it
-                        local targetCF = getTargetCFrame(currentTarget.part)
-                        if targetCF then
-                            moveToTarget(targetCF)
-                        end
-                        task.wait(0.15)  -- Match tween duration
-                        continue
-                    end
-
-                    -- Get new target
-                    local closest = getClosestEnemy()
-                    if closest then
-                        currentTarget = closest
-                        print("[AutoFarm] New target:", closest.entity.Name)
-                        local targetCF = getTargetCFrame(closest.part)
-                        if targetCF then
-                            moveToTarget(targetCF)
-                        end
-                    else
-                        print("[AutoFarm] No enemies")
-                        task.wait(1)
-                    end
-                    task.wait(0.15)
-                end
-                if currentTween then
-                    currentTween:Cancel()
-                    currentTween = nil
-                end
-                currentTarget = nil
-                print("[AutoFarm] Disabled")
-            end)
-        else
-            if currentTween then
-                currentTween:Cancel()
-                currentTween = nil
-            end
-            currentTarget = nil
-        end
-    end
-})
-
--- =========================
--- COMBAT TAB
--- =========================
-CombatTab:CreateSection({ name = "Auto Combat" })
-
--- Auto M1
-CombatTab:CreateToggle({
-    name = "Auto M1",
-    flag = "AutoM1",
-
     callback = function(value)
-        getgenv().AutoM1 = value
+
+        getgenv().AutoFarm = value
+
+        if not value then
+            cleanupMovement()
+            return
+        end
+
+        if farmConnection then
+            farmConnection:Disconnect()
+        end
+
+        farmConnection =
+            RunService.Heartbeat:Connect(function()
+                updateFarm()
+            end)
     end,
 })
 
--- Select Skills (Dropdown)
+--==================================================
+-- COMBAT TAB
+--==================================================
+
+CombatTab:CreateSection({
+    name = "Auto Combat"
+})
+
+--==================================================
+-- AUTO M1
+--==================================================
+
+CombatTab:CreateToggle({
+    name = "Auto M1",
+
+    flag = "AutoM1",
+
+    callback = function(value)
+
+        getgenv().AutoM1 = value
+
+    end,
+})
+
+--==================================================
+-- MULTI-SELECT SKILLS
+--==================================================
+
 CombatTab:CreateDropdown({
+
     name = "Select Skills",
+
     multiSelect = true,
+
     options = {
         "Skill 1",
         "Skill 2",
         "Skill 3",
         "Skill 4",
     },
-    value = {"Skill 1"},
+
+    value = {
+        "Skill 1"
+    },
+
     flag = "SelectedSkills",
 
     callback = function(selected)
+
         SelectedSkills = selected
-        print("Selected skills:", table.concat(selected, ", "))
+
+        print(
+            "[Skills]",
+            table.concat(selected, ", ")
+        )
     end,
 })
 
--- Auto Skills Toggle
+--==================================================
+-- AUTO SKILLS
+--==================================================
+
 CombatTab:CreateToggle({
+
     name = "Auto Skills",
+
     flag = "AutoSkills",
 
     callback = function(value)
+
         getgenv().AutoSkills = value
+
     end,
 })
 
--- =========================
--- COMBAT LOOP (M1 + Skills)
--- =========================
+--==================================================
+-- COMBAT LOOP
+--==================================================
+
 task.spawn(function()
+
     while true do
-        -- Auto M1
+
         if getgenv().AutoM1 and hasAliveTargets() then
+
             pcall(function()
-                Attack:FireServer(Vector3.new(0, 0, 0))
+
+                Attack:FireServer(
+                    Vector3.new(0, 0, 0)
+                )
+
             end)
         end
 
-        -- Auto Skills
-        if getgenv().AutoSkills and hasAliveTargets() then
+        if getgenv().AutoSkills
+            and hasAliveTargets()
+            and #SelectedSkills > 0 then
+
+            -- Fire every selected skill during
+            -- the same combat update.
+
             for _, skillName in ipairs(SelectedSkills) do
-                local skillNumber = tonumber(string.match(skillName, "%d+"))
+
+                local skillNumber =
+                    tonumber(
+                        string.match(
+                            skillName,
+                            "%d+"
+                        )
+                    )
+
                 if skillNumber then
+
                     pcall(function()
-                        Skill:FireServer(skillNumber, "tap", Vector3.new(0, 0, 0))
+
+                        Skill:FireServer(
+                            skillNumber,
+                            "tap",
+                            Vector3.new(0, 0, 0)
+                        )
+
                     end)
                 end
             end
@@ -330,4 +629,32 @@ task.spawn(function()
     end
 end)
 
-print("[Script] Ready! Enable Auto Farm, Auto M1, and Auto Skills.")
+--==================================================
+-- CHARACTER RESPAWN
+--==================================================
+
+LocalPlayer.CharacterAdded:Connect(function()
+
+    currentTarget = nil
+
+    if getgenv().AutoFarm then
+
+        task.wait(1)
+
+        local character = LocalPlayer.Character
+
+        if character then
+
+            local hrp =
+                character:FindFirstChild(
+                    "HumanoidRootPart"
+                )
+
+            if hrp then
+                createMovement(hrp)
+            end
+        end
+    end
+end)
+
+print("[Testing] Combat & Farm loaded.")
