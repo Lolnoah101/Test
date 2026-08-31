@@ -8,7 +8,7 @@ local Window = Rayfield:CreateWindow({
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "TestingHub",
+        fileName = "TestingHubV2",
     },
 })
 
@@ -22,14 +22,12 @@ local Skill = Remotes.Skill
 
 local AutoM1 = false
 local AutoSkill = false
+
 local SelectedSkills = {
     "Skill 1"
 }
 
--- =========================
--- AUTO M1
--- =========================
-
+-- M1
 CombatTab:CreateToggle({
     name = "Auto M1",
     flag = "AutoM1",
@@ -48,13 +46,9 @@ CombatTab:CreateToggle({
     end,
 })
 
--- =========================
--- MULTI-SKILL SELECTOR
--- =========================
-
+-- MULTI SELECT SKILLS
 CombatTab:CreateDropdown({
     name = "Select Skills",
-    flag = "SelectedSkills",
 
     multiSelect = true,
 
@@ -71,13 +65,15 @@ CombatTab:CreateDropdown({
 
     callback = function(selected)
         SelectedSkills = selected
+
+        print("Selected skills:")
+        for _, skillName in ipairs(selected) do
+            print(skillName)
+        end
     end,
 })
 
--- =========================
 -- AUTO SKILL
--- =========================
-
 CombatTab:CreateToggle({
     name = "Auto Skill",
     flag = "AutoSkill",
@@ -90,22 +86,13 @@ CombatTab:CreateToggle({
                 while AutoSkill do
 
                     for _, skillName in ipairs(SelectedSkills) do
-
                         if not AutoSkill then
                             break
                         end
 
-                        local skillNumber
-
-                        if skillName == "Skill 1" then
-                            skillNumber = 1
-                        elseif skillName == "Skill 2" then
-                            skillNumber = 2
-                        elseif skillName == "Skill 3" then
-                            skillNumber = 3
-                        elseif skillName == "Skill 4" then
-                            skillNumber = 4
-                        end
+                        local skillNumber = tonumber(
+                            string.match(skillName, "%d+")
+                        )
 
                         if skillNumber then
                             Skill:FireServer(
