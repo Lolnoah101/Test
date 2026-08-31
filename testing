@@ -27,7 +27,10 @@ local SelectedSkills = {
     "Skill 1"
 }
 
--- M1
+-- =========================
+-- AUTO M1
+-- =========================
+
 CombatTab:CreateToggle({
     name = "Auto M1",
     flag = "AutoM1",
@@ -39,14 +42,17 @@ CombatTab:CreateToggle({
             task.spawn(function()
                 while AutoM1 do
                     Attack:FireServer(Vector3.new(0, 0, 0))
-                    task.wait(1)
+                    task.wait(0.1)
                 end
             end)
         end
     end,
 })
 
--- MULTI SELECT SKILLS
+-- =========================
+-- SELECT MULTIPLE SKILLS
+-- =========================
+
 CombatTab:CreateDropdown({
     name = "Select Skills",
 
@@ -67,13 +73,17 @@ CombatTab:CreateDropdown({
         SelectedSkills = selected
 
         print("Selected skills:")
+
         for _, skillName in ipairs(selected) do
             print(skillName)
         end
     end,
 })
 
+-- =========================
 -- AUTO SKILL
+-- =========================
+
 CombatTab:CreateToggle({
     name = "Auto Skill",
     flag = "AutoSkill",
@@ -102,10 +112,10 @@ CombatTab:CreateToggle({
                             )
                         end
 
-                        task.wait(0.1)
+                        task.wait(0.01)
                     end
 
-                    task.wait(0.5)
+                    task.wait(0.01)
                 end
             end)
         end
