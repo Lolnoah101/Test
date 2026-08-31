@@ -8,7 +8,7 @@ local Window = Rayfield:CreateWindow({
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "TestingHubV2",
+        fileName = "TestingHubV3",
     },
 })
 
@@ -21,16 +21,14 @@ local Attack = Remotes.Attack
 local Skill = Remotes.Skill
 
 local AutoM1 = false
-local AutoSkill = false
-
-local SelectedSkills = {
-    "Skill 1"
-}
+local AutoSkill1 = false
+local AutoSkill2 = false
+local AutoSkill3 = false
+local AutoSkill4 = false
 
 -- =========================
 -- AUTO M1
 -- =========================
-
 CombatTab:CreateToggle({
     name = "Auto M1",
     flag = "AutoM1",
@@ -50,74 +48,87 @@ CombatTab:CreateToggle({
 })
 
 -- =========================
--- SELECT MULTIPLE SKILLS
+-- AUTO SKILL 1
 -- =========================
-
-CombatTab:CreateDropdown({
-    name = "Select Skills",
-
-    multiSelect = true,
-
-    options = {
-        "Skill 1",
-        "Skill 2",
-        "Skill 3",
-        "Skill 4",
-    },
-
-    value = {
-        "Skill 1"
-    },
-
-    callback = function(selected)
-        SelectedSkills = selected
-
-        print("Selected skills:")
-
-        for _, skillName in ipairs(selected) do
-            print(skillName)
-        end
-    end,
-})
-
--- =========================
--- AUTO SKILL
--- =========================
-
 CombatTab:CreateToggle({
-    name = "Auto Skill",
-    flag = "AutoSkill",
+    name = "Auto Skill 1",
+    flag = "AutoSkill1",
 
     callback = function(value)
-        AutoSkill = value
+        AutoSkill1 = value
 
         if value then
             task.spawn(function()
-                while AutoSkill do
-
-                    for _, skillName in ipairs(SelectedSkills) do
-                        if not AutoSkill then
-                            break
-                        end
-
-                        local skillNumber = tonumber(
-                            string.match(skillName, "%d+")
-                        )
-
-                        if skillNumber then
-                            Skill:FireServer(
-                                skillNumber,
-                                "tap",
-                                Vector3.new(0, 0, 0)
-                            )
-                        end
-
-                        task.wait(0.01)
-                    end
-
-                    task.wait(0.01)
+                while AutoSkill1 do
+                    Skill:FireServer(1, "tap", Vector3.new(0, 0, 0))
+                    task.wait(0.1)
                 end
             end)
         end
     end,
 })
+
+-- =========================
+-- AUTO SKILL 2
+-- =========================
+CombatTab:CreateToggle({
+    name = "Auto Skill 2",
+    flag = "AutoSkill2",
+
+    callback = function(value)
+        AutoSkill2 = value
+
+        if value then
+            task.spawn(function()
+                while AutoSkill2 do
+                    Skill:FireServer(2, "tap", Vector3.new(0, 0, 0))
+                    task.wait(0.1)
+                end
+            end)
+        end
+    end,
+})
+
+-- =========================
+-- AUTO SKILL 3
+-- =========================
+CombatTab:CreateToggle({
+    name = "Auto Skill 3",
+    flag = "AutoSkill3",
+
+    callback = function(value)
+        AutoSkill3 = value
+
+        if value then
+            task.spawn(function()
+                while AutoSkill3 do
+                    Skill:FireServer(3, "tap", Vector3.new(0, 0, 0))
+                    task.wait(0.1)
+                end
+            end)
+        end
+    end,
+})
+
+-- =========================
+-- AUTO SKILL 4
+-- =========================
+CombatTab:CreateToggle({
+    name = "Auto Skill 4",
+    flag = "AutoSkill4",
+
+    callback = function(value)
+        AutoSkill4 = value
+
+        if value then
+            task.spawn(function()
+                while AutoSkill4 do
+                    Skill:FireServer(4, "tap", Vector3.new(0, 0, 0))
+                    task.wait(0.1)
+                end
+            end)
+        end
+    end,
+})
+
+print("[Combat] Ready! Toggle M1 and/or any skill to start spamming.")
