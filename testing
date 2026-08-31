@@ -274,5 +274,3 @@ Tabs.Combat:AddButton({
 Window:SelectTab(1)
 
 print("[Combat Hub] Loaded successfully!")
-Window:SelectTab(1)
-```
