@@ -1,249 +1,199 @@
-local Luna = loadstring(game:HttpGet("https://raw.nebulasoftworks.xyz/luna", true))()
+```lua
+local Fluent = loadstring(game:HttpGet(
+    "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
+))()
 
-local Window = Luna:CreateWindow({
-    Name = "Luna Example Window", -- This Is Title Of Your Window
-    Subtitle = nil, -- A Gray Subtitle next To the main title.
-    LogoID = "82795327169782", -- The Asset ID of your logo. Set to nil if you do not have a logo for Luna to use.
-    LoadingEnabled = true, -- Whether to enable the loading animation. Set to false if you do not want the loading screen or have your own custom one.
-    LoadingTitle = "Luna Interface Suite", -- Header for loading screen
-    LoadingSubtitle = "by Nebula Softworks", -- Subtitle for loading screen
-
-    ConfigSettings = {
-        RootFolder = nil, -- The Root Folder Is Only If You Have A Hub With Multiple Game Scripts and u may remove it. DO NOT ADD A SLASH
-        ConfigFolder = "Big Hub" -- The Name Of The Folder Where Luna Will Store Configs For This Script. DO NOT ADD A SLASH
-    },
-
-    KeySystem = false, -- As Of Beta 6, Luna Has officially Implemented A Key System!
-    KeySettings = {
-        Title = "Luna Example Key",
-        Subtitle = "Key System",
-        Note = "Best Key System Ever! Also, Please Use A HWID Keysystem like Pelican, Luarmor etc. that provide key strings based on your HWID since putting a simple string is very easy to bypass",
-        SaveInRoot = false, -- Enabling will save the key in your RootFolder (YOU MUST HAVE ONE BEFORE ENABLING THIS OPTION)
-        SaveKey = true, -- The user's key will be saved, but if you change the key, they will be unable to use your script
-        Key = {"Example Key"}, -- List of keys that will be accepted by the system, please use a system like Pelican or Luarmor that provide key strings based on your HWID since putting a simple string is very easy to bypass
-        SecondAction = {
-            Enabled = true, -- Set to false if you do not want a second action,
-            Type = "Link", -- Link / Discord.
-            Parameter = "" -- If Type is Discord, then put your invite link (DO NOT PUT DISCORD.GG/). Else, put the full link of your key system here.
-        }
-    }
+local Window = Fluent:CreateWindow({
+    Title = "[NEW GAME]",
+    SubTitle = "Combat Hub",
+    TabWidth = 160,
+    Size = UDim2.fromOffset(580, 460),
+    Acrylic = true,
+    Theme = "Dark",
+    MinimizeKey = Enum.KeyCode.LeftControl
 })
 
-local Tab = Window:CreateTab({
-    Name = "Tab Example",
-    Icon = "view_in_ar",
-    ImageSource = "Material",
-    ShowTitle = true -- This will determine whether the big header text in the tab will show
-})
+local Tabs = {
+    Combat = Window:AddTab({
+        Title = "Combat",
+        Icon = "sword"
+    })
+}
 
-Tab:CreateToggle({
-   Name = "Auto Click",
-   CurrentValue = false,
-   Flag = "AutoClick",
-   Callback = function(Value)
-      getgenv().AutoClickClosest = Value
-      
-      if Value then
-         task.spawn(function()
-            local player = game.Players.LocalPlayer
-            local remotes = game:GetService("ReplicatedStorage")
-               :WaitForChild("ffrostflame_bridgenet2@1.0.0")
-               :WaitForChild("dataRemoteEvent")
-            
-            while getgenv().AutoClickClosest do
-               local success, err = pcall(function()
-                  local character = player.Character
-                  if not character then return end
-                  
-                  local hrp = character:FindFirstChild("HumanoidRootPart")
-                  if not hrp then return end
-                  
-                  local enemiesFolder = workspace:FindFirstChild("_ENEMIES")
-                  if not enemiesFolder then return end
-                  
-                  enemiesFolder = enemiesFolder:FindFirstChild("Client")
-                  if not enemiesFolder then return end
-                  
-                  local closestEnemy = nil
-                  local closestDistance = math.huge  -- very large number
-                  
-                  -- Find closest valid enemy
-                  for _, enemy in ipairs(enemiesFolder:GetChildren()) do
-                     local enemyHrp = enemy:FindFirstChild("HumanoidRootPart") 
-                                    or enemy:FindFirstChildWhichIsA("BasePart")  -- fallback
-                     
-                     if enemyHrp and enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then
-                        local distance = (hrp.Position - enemyHrp.Position).Magnitude
-                        
-                        if distance < closestDistance then
-                           closestDistance = distance
-                           closestEnemy = enemy
-                        end
-                     end
-                  end
-                  
-                  -- If we found a close enemy → click it
-                  if closestEnemy then
-                     local args = {
-                        {
-                           {
-                              "ClickSystem",
-                              "Execute",
-                              closestEnemy.Name,   -- ← uses the closest enemy's ID
-                              n = 3
-                           },
-                           "\002"
-                        }
-                     }
-                     remotes:FireServer(unpack(args))
-                  end
-               end)
-               
-               if not success then
-                  warn("Auto-click error:", err)
-               end
-               
-               task.wait(0.1)  -- ≈8 clicks/sec – adjust: 0.08 = faster, 0.25 = safer
-            end
-         end)
-      end
-   end,
-})
+local Options = Fluent.Options
 
--- ╔════════════════════════════════════════════════════════════╗
--- ║                    Enemy Teleport Dropdown + Toggle        ║
--- ╚════════════════════════════════════════════════════════════╝
+-- =========================================================
+-- REMOTES
+-- =========================================================
 
-local selectedTeleportId = nil  -- Stores selected enemy ID for teleport/toggle
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
--- Function to get current valid enemy IDs (for dropdown)
-local function getEnemyIds()
-    local ids = {}
-    local enemiesFolder = workspace:FindFirstChild("_ENEMIES")
-    if not enemiesFolder then return ids end
-    
-    enemiesFolder = enemiesFolder:FindFirstChild("Client")
-    if not enemiesFolder then return ids end
-    
-    for _, enemy in ipairs(enemiesFolder:GetChildren()) do
-        if enemy.Name:match("^[a-f0-9]+$") and #enemy.Name == 32 then
-            table.insert(ids, enemy.Name)
-        end
-    end
-    
-    return ids
-end
+local AttackRemote = ReplicatedStorage
+    :WaitForChild("Player")
+    :WaitForChild("Remotes")
+    :WaitForChild("Inputs")
+    :WaitForChild("Attack")
 
--- Dropdown: Select enemy to teleport to
-local TeleportDropdown = Tab:CreateDropdown({
-    Name = "Select Enemy to Teleport To",
-    Description = "Pick from current enemies (used for manual/auto teleport)",
-    Options = getEnemyIds(),              -- Starts with current list
-    CurrentOption = {},                   -- None selected
-    MultipleOptions = false,
-    Flag = "TeleportEnemyDropdown",
-    
-    Callback = function(Option)
-        if typeof(Option) == "string" and #Option == 32 then
-            selectedTeleportId = Option
-            print("Selected for teleport:", selectedTeleportId)
-        else
-            selectedTeleportId = nil
-        end
-    end
-})
+local SkillRemote = ReplicatedStorage
+    :WaitForChild("Player")
+    :WaitForChild("Remotes")
+    :WaitForChild("Inputs")
+    :WaitForChild("Skill")
 
--- Button: Instant one-time teleport to selected enemy
-Tab:CreateButton({
-    Name = "Teleport to Selected (Once)",
-    Callback = function()
-        if not selectedTeleportId then
-            print("No enemy selected! Refresh & pick one first.")
-            return
-        end
-        
-        pcall(function()
-            local enemiesFolder = workspace._ENEMIES.Client
-            local targetEnemy = enemiesFolder:FindFirstChild(selectedTeleportId)
-            if not targetEnemy then
-                print("Enemy no longer exists!")
-                return
-            end
-            
-            local player = game.Players.LocalPlayer
-            local character = player.Character
-            if not character then return end
-            
-            local hrp = character:FindFirstChild("HumanoidRootPart")
-            if not hrp then return end
-            
-            local enemyHrp = targetEnemy:FindFirstChild("HumanoidRootPart")
-                         or targetEnemy:FindFirstChildWhichIsA("BasePart")
-            if not enemyHrp then
-                print("No valid part found on enemy!")
-                return
-            end
-            
-            -- Teleport slightly behind enemy
-            hrp.CFrame = enemyHrp.CFrame * CFrame.new(0, 0, -4)
-            print("Teleported to:", selectedTeleportId)
-        end)
-    end
-})
+print("[Combat] Attack remote found!")
+print("[Combat] Skill remote found!")
 
--- Refresh button: Update dropdown with new enemies
-Tab:CreateButton({
-    Name = "🔄 Refresh Enemy List",
-    Callback = function()
-        local newOptions = getEnemyIds()
-        TeleportDropdown:Refresh(newOptions, true)  -- Auto-select first if available
-        
-        if #newOptions > 0 then
-            print("Refreshed — Found " .. #newOptions .. " enemies")
-        else
-            print("No enemies found!")
-        end
-    end
-})
 
--- ╔════════════════════════════════════════════════════════════╗
--- ║          Auto-Teleport Toggle (to Selected Enemy)          ║
--- ╚════════════════════════════════════════════════════════════╝
-Tab:CreateToggle({
-    Name = "Auto Teleport to Selected",
-    CurrentValue = false,
-    Flag = "AutoTeleportSelected",
+-- =========================================================
+-- VARIABLES
+-- =========================================================
+
+local autoAttack = false
+local autoSkills = false
+
+
+-- =========================================================
+-- AUTO M1
+-- =========================================================
+
+Tabs.Combat:AddToggle("AutoAttack", {
+    Title = "Auto M1",
+    Default = false,
+
     Callback = function(Value)
-        getgenv().AutoTeleportSelected = Value
-        
-        if Value then
+        autoAttack = Value
+
+        if autoAttack then
             task.spawn(function()
-                while getgenv().AutoTeleportSelected do
+                while autoAttack do
+
                     pcall(function()
-                        if not selectedTeleportId then return end
-                        
-                        local enemiesFolder = workspace._ENEMIES.Client
-                        local targetEnemy = enemiesFolder:FindFirstChild(selectedTeleportId)
-                        if not targetEnemy then return end
-                        
-                        local player = game.Players.LocalPlayer
-                        local character = player.Character
-                        if not character then return end
-                        
-                        local hrp = character:FindFirstChild("HumanoidRootPart")
-                        if not hrp then return end
-                        
-                        local enemyHrp = targetEnemy:FindFirstChild("HumanoidRootPart")
-                                     or targetEnemy:FindFirstChildWhichIsA("BasePart")
-                        if enemyHrp then
-                            -- Stick to enemy (follows as it moves!)
-                            hrp.CFrame = enemyHrp.CFrame * CFrame.new(0, 0, -4)
-                        end
+                        AttackRemote:FireServer(
+                            Vector3.new(0, 0, 0)
+                        )
                     end)
-                    
-                    task.wait(0.3)  -- Teleport rate: 0.2=fast follow, 1=less aggressive
+
+                    task.wait(0.1)
                 end
             end)
         end
     end
 })
+
+
+-- =========================================================
+-- SKILL SELECTION
+-- =========================================================
+
+local SkillDropdown = Tabs.Combat:AddDropdown("SkillSelection", {
+    Title = "Select Skills",
+    Values = {
+        "1",
+        "2",
+        "3",
+        "4"
+    },
+    Multi = true,
+    Default = {}
+})
+
+
+-- =========================================================
+-- AUTO SKILLS
+-- =========================================================
+
+Tabs.Combat:AddToggle("AutoSkills", {
+    Title = "Auto Skills",
+    Default = false,
+
+    Callback = function(Value)
+        autoSkills = Value
+
+        if autoSkills then
+            task.spawn(function()
+                while autoSkills do
+
+                    local selectedSkills = SkillDropdown.Value
+
+                    for skillNumber, enabled in pairs(selectedSkills) do
+
+                        if not autoSkills then
+                            break
+                        end
+
+                        if enabled then
+                            pcall(function()
+                                SkillRemote:FireServer(
+                                    tonumber(skillNumber),
+                                    "tap",
+                                    Vector3.new(0, 0, 0)
+                                )
+                            end)
+
+                            task.wait(0.2)
+                        end
+                    end
+
+                    task.wait(0.5)
+                end
+            end)
+        end
+    end
+})
+
+
+-- =========================================================
+-- MANUAL SKILLS
+-- =========================================================
+
+Tabs.Combat:AddButton({
+    Title = "Use Skill 1",
+
+    Callback = function()
+        SkillRemote:FireServer(
+            1,
+            "tap",
+            Vector3.new(0, 0, 0)
+        )
+    end
+})
+
+Tabs.Combat:AddButton({
+    Title = "Use Skill 2",
+
+    Callback = function()
+        SkillRemote:FireServer(
+            2,
+            "tap",
+            Vector3.new(0, 0, 0)
+        )
+    end
+})
+
+Tabs.Combat:AddButton({
+    Title = "Use Skill 3",
+
+    Callback = function()
+        SkillRemote:FireServer(
+            3,
+            "tap",
+            Vector3.new(0, 0, 0)
+        )
+    end
+})
+
+Tabs.Combat:AddButton({
+    Title = "Use Skill 4",
+
+    Callback = function()
+        SkillRemote:FireServer(
+            4,
+            "tap",
+            Vector3.new(0, 0, 0)
+        )
+    end
+})
+
+
+Window:SelectTab(1)
+```
