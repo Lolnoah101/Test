@@ -1,5 +1,9 @@
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
+--==================================================
+-- WINDOW
+--==================================================
+
 local Window = Rayfield:CreateWindow({
     name = "Testing",
     subtitle = "Combat & Farm",
@@ -26,9 +30,14 @@ local LocalPlayer = Players.LocalPlayer
 -- REMOTES
 --==================================================
 
-local Remotes = ReplicatedStorage.Player.Remotes.Inputs
-local Attack = Remotes.Attack
-local Skill = Remotes.Skill
+local Remotes =
+    ReplicatedStorage
+        :WaitForChild("Player")
+        :WaitForChild("Remotes")
+        :WaitForChild("Inputs")
+
+local Attack = Remotes:WaitForChild("Attack")
+local Skill = Remotes:WaitForChild("Skill")
 
 --==================================================
 -- TABS
@@ -43,119 +52,133 @@ local FarmTab = Window:CreateTab({
 })
 
 --==================================================
--- SETTINGS
+-- GLOBAL SETTINGS
 --==================================================
 
 getgenv().AutoM1 = false
 getgenv().AutoSkills = false
 getgenv().AutoFarm = false
 
+--==================================================
+-- COMBAT SETTINGS
+--==================================================
+
 local SelectedSkills = {
     "Skill 1"
 }
 
+--==================================================
+-- FARM SETTINGS
+--==================================================
+
 local distance = 5
 local selectedMode = "Above"
+local circleSpeed = 3
 
 local currentTarget = nil
-
-local bodyPosition = nil
-local bodyGyro = nil
-local farmConnection = nil
+local followConnection = nil
+local farmLoopRunning = false
 
 --==================================================
--- ENEMY CHECK
+-- ENEMY ALIVE CHECK
 --==================================================
 
 local function isEntityAlive(entity)
+
     if not entity or not entity.Parent then
         return false
     end
 
-    local humanoid = entity:FindFirstChildOfClass("Humanoid")
+    -- Humanoid
+    local humanoid =
+        entity:FindFirstChildOfClass("Humanoid")
 
     if humanoid then
         return humanoid.Health > 0
     end
 
+    -- Dead attribute
     if entity:GetAttribute("Dead") == true then
         return false
     end
 
-    local health = entity:GetAttribute("Health")
+    -- Health attribute
+    local healthAttribute =
+        entity:GetAttribute("Health")
 
-    if health ~= nil then
-        local numericHealth = tonumber(health)
+    if healthAttribute ~= nil then
 
-        if numericHealth then
-            return numericHealth > 0
+        local health =
+            tonumber(healthAttribute)
+
+        if health then
+            return health > 0
         end
+    end
+
+    -- Health NumberValue
+    local healthValue =
+        entity:FindFirstChild("Health")
+
+    if healthValue
+        and healthValue:IsA("NumberValue") then
+
+        return healthValue.Value > 0
     end
 
     return false
 end
 
 --==================================================
--- NPC FOLDER
+-- ENEMY FOLDERS
 --==================================================
 
-local function getNPCFolder()
-    for _, object in ipairs(workspace:GetChildren()) do
-        if string.find(object.Name, "Generated_") then
+local function getEnemyFolders()
 
-            local folder = object:FindFirstChild("NPCs")
+    local npcFolder =
+        workspace:FindFirstChild("NPCs")
 
-            if folder then
-                return folder
-            end
-        end
-    end
+    local bossFolder =
+        workspace:FindFirstChild("Boss")
 
-    return nil
+    return npcFolder, bossFolder
 end
 
 --==================================================
--- GET ENEMIES
+-- GET ROOT PART
 --==================================================
 
-local function getAllEnemies()
-    local enemies = {}
+local function getEnemyRoot(entity)
 
-    local npcFolder = getNPCFolder()
-
-    if not npcFolder then
-        return enemies
+    if not entity then
+        return nil
     end
 
-    for _, enemy in ipairs(npcFolder:GetChildren()) do
-
-        if isEntityAlive(enemy) then
-
-            local root =
-                enemy:FindFirstChild("HumanoidRootPart")
-                or enemy:FindFirstChildWhichIsA("BasePart")
-
-            if root then
-                table.insert(enemies, enemy)
-            end
-        end
-    end
-
-    return enemies
+    return
+        entity:FindFirstChild("HumanoidRootPart")
+        or entity.PrimaryPart
+        or entity:FindFirstChildWhichIsA("BasePart")
 end
 
 --==================================================
--- CLOSEST ENEMY
+-- GET CLOSEST ENEMY IN FOLDER
 --==================================================
 
-local function getClosestEnemy()
-    local character = LocalPlayer.Character
+local function getClosestInFolder(folder)
+
+    if not folder then
+        return nil
+    end
+
+    local character =
+        LocalPlayer.Character
 
     if not character then
         return nil
     end
 
-    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local hrp =
+        character:FindFirstChild("HumanoidRootPart")
 
     if not hrp then
         return nil
@@ -164,26 +187,28 @@ local function getClosestEnemy()
     local closest = nil
     local closestDistance = math.huge
 
-    for _, enemy in ipairs(getAllEnemies()) do
+    for _, entity in ipairs(folder:GetChildren()) do
 
-        local root =
-            enemy:FindFirstChild("HumanoidRootPart")
-            or enemy:FindFirstChildWhichIsA("BasePart")
+        if isEntityAlive(entity) then
 
-        if root and isEntityAlive(enemy) then
+            local root =
+                getEnemyRoot(entity)
 
-            local dist =
-                (hrp.Position - root.Position).Magnitude
+            if root then
 
-            if dist < closestDistance then
+                local currentDistance =
+                    (hrp.Position - root.Position).Magnitude
 
-                closestDistance = dist
+                if currentDistance < closestDistance then
 
-                closest = {
-                    entity = enemy,
-                    part = root,
-                    distance = dist
-                }
+                    closestDistance = currentDistance
+
+                    closest = {
+                        entity = entity,
+                        part = root,
+                        distance = currentDistance,
+                    }
+                end
             end
         end
     end
@@ -192,29 +217,186 @@ local function getClosestEnemy()
 end
 
 --==================================================
--- CLEANUP MOVEMENT
+-- GET CLOSEST TARGET
 --==================================================
 
-local function cleanupMovement()
+local function getClosestAliveTarget()
 
-    if farmConnection then
-        farmConnection:Disconnect()
-        farmConnection = nil
+    local npcFolder, bossFolder =
+        getEnemyFolders()
+
+    -- NPCs have priority
+    local npcTarget =
+        getClosestInFolder(npcFolder)
+
+    if npcTarget then
+        return npcTarget
     end
 
-    if bodyPosition then
-        bodyPosition:Destroy()
-        bodyPosition = nil
+    -- Bosses second
+    local bossTarget =
+        getClosestInFolder(bossFolder)
+
+    if bossTarget then
+        return bossTarget
     end
 
-    if bodyGyro then
-        bodyGyro:Destroy()
-        bodyGyro = nil
+    return nil
+end
+
+--==================================================
+-- HAS ALIVE TARGET
+--==================================================
+
+local function hasAliveTargets()
+
+    local npcFolder, bossFolder =
+        getEnemyFolders()
+
+    if npcFolder then
+
+        for _, npc in ipairs(npcFolder:GetChildren()) do
+
+            if isEntityAlive(npc) then
+                return true
+            end
+        end
     end
 
-    local character = LocalPlayer.Character
+    if bossFolder then
+
+        for _, boss in ipairs(bossFolder:GetChildren()) do
+
+            if isEntityAlive(boss) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+--==================================================
+-- TARGET CFRAME
+--==================================================
+
+local function getTargetCFrame(enemyPart)
+
+    if not enemyPart
+        or not enemyPart.Parent then
+
+        return nil
+    end
+
+    local enemyPosition =
+        enemyPart.Position
+
+    --==================================================
+    -- ABOVE
+    --==================================================
+
+    if selectedMode == "Above" then
+
+        local position =
+            enemyPosition
+            + Vector3.new(0, distance, 0)
+
+        return CFrame.lookAt(
+            position,
+            enemyPosition + Vector3.new(0, 2, 0)
+        )
+    end
+
+    --==================================================
+    -- BELOW
+    --==================================================
+
+    if selectedMode == "Below" then
+
+        local position =
+            enemyPosition
+            - Vector3.new(0, distance, 0)
+
+        return CFrame.lookAt(
+            position,
+            enemyPosition
+        )
+    end
+
+    --==================================================
+    -- BEHIND
+    --==================================================
+
+    if selectedMode == "Behind" then
+
+        local lookVector =
+            enemyPart.CFrame.LookVector
+
+        if lookVector.Magnitude < 0.1 then
+
+            lookVector =
+                Vector3.new(0, 0, -1)
+        end
+
+        local position =
+            enemyPosition
+            - lookVector * distance
+            + Vector3.new(0, 2, 0)
+
+        return CFrame.lookAt(
+            position,
+            enemyPosition
+        )
+    end
+
+    --==================================================
+    -- CIRCLE
+    --==================================================
+
+    if selectedMode == "Circle" then
+
+        local angle =
+            os.clock() * circleSpeed
+
+        local offset =
+            Vector3.new(
+                math.cos(angle) * distance,
+                1,
+                math.sin(angle) * distance
+            )
+
+        local position =
+            enemyPosition + offset
+
+        return CFrame.lookAt(
+            position,
+            enemyPosition
+        )
+    end
+
+    return nil
+end
+
+--==================================================
+-- STOP FOLLOW
+--==================================================
+
+local function stopFollow()
+
+    if followConnection then
+
+        followConnection:Disconnect()
+        followConnection = nil
+
+    end
+
+    currentTarget = nil
+
+    local character =
+        LocalPlayer.Character
 
     if character then
+
         local humanoid =
             character:FindFirstChildOfClass("Humanoid")
 
@@ -222,282 +404,237 @@ local function cleanupMovement()
             humanoid.AutoRotate = true
         end
     end
-
-    currentTarget = nil
 end
 
 --==================================================
--- CREATE MOVEMENT
+-- START FOLLOW
 --==================================================
 
-local function createMovement(hrp)
+local function startFollow(targetData)
 
-    cleanupMovement()
+    if not targetData
+        or not targetData.entity then
 
-    if not hrp then
         return
     end
 
-    local character = hrp.Parent
+    if followConnection then
 
-    local humanoid =
-        character:FindFirstChildOfClass("Humanoid")
+        followConnection:Disconnect()
+        followConnection = nil
 
-    -- Stop Roblox from changing our rotation
-    if humanoid then
-        humanoid.AutoRotate = false
     end
 
-    -- POSITION
-    bodyPosition = Instance.new("BodyPosition")
+    local player =
+        LocalPlayer
 
-    bodyPosition.Name = "AutoFarmPosition"
+    print(
+        "[AutoFarm] Following:",
+        targetData.entity.Name
+    )
 
-    bodyPosition.MaxForce =
-        Vector3.new(
-            math.huge,
-            math.huge,
-            math.huge
-        )
+    followConnection =
+        RunService.Heartbeat:Connect(function()
 
-    bodyPosition.P = 25000
-    bodyPosition.D = 1500
-    bodyPosition.Position = hrp.Position
+            if not getgenv().AutoFarm then
+                return
+            end
 
-    bodyPosition.Parent = hrp
+            local character =
+                player.Character
 
-    -- ROTATION
-    bodyGyro = Instance.new("BodyGyro")
+            if not character then
+                return
+            end
 
-    bodyGyro.Name = "AutoFarmGyro"
+            local hrp =
+                character:FindFirstChild(
+                    "HumanoidRootPart"
+                )
 
-    bodyGyro.MaxTorque =
-        Vector3.new(
-            math.huge,
-            math.huge,
-            math.huge
-        )
+            if not hrp then
+                return
+            end
 
-    bodyGyro.P = 25000
-    bodyGyro.D = 1500
-    bodyGyro.CFrame = hrp.CFrame
+            local enemy =
+                targetData.entity
 
-    bodyGyro.Parent = hrp
-end
+            --==================================================
+            -- TARGET CHECK
+            --==================================================
 
---==================================================
--- TARGET POSITION
---==================================================
+            if not enemy
+                or not enemy.Parent
+                or not isEntityAlive(enemy) then
 
-local function getTargetPosition(targetPart)
+                currentTarget = nil
 
-    if not targetPart or not targetPart.Parent then
-        return nil, nil
-    end
-
-    local enemyPosition = targetPart.Position
-
-    local targetPosition
-
-    if selectedMode == "Above" then
-
-        targetPosition =
-            enemyPosition +
-            Vector3.new(0, distance, 0)
-
-    elseif selectedMode == "Below" then
-
-        targetPosition =
-            enemyPosition -
-            Vector3.new(0, distance, 0)
-
-    elseif selectedMode == "Behind" then
-
-        local lookVector =
-            targetPart.CFrame.LookVector
-
-        targetPosition =
-            enemyPosition -
-            lookVector * distance
-
-    elseif selectedMode == "Circle" then
-
-        local angle = os.clock() * 3
-
-        targetPosition =
-            enemyPosition +
-            Vector3.new(
-                math.cos(angle) * distance,
-                1,
-                math.sin(angle) * distance
-            )
-    end
-
-    return targetPosition, enemyPosition
-end
-
---==================================================
--- FACE ENEMY
---==================================================
-
-local function faceEnemy(hrp, enemyPosition)
-
-    if not bodyGyro then
-        return
-    end
-
-    if not hrp then
-        return
-    end
-
-    local direction =
-        enemyPosition - hrp.Position
-
-    if direction.Magnitude < 0.01 then
-        return
-    end
-
-    -- This makes the character's front point
-    -- directly toward the enemy.
-    bodyGyro.CFrame =
-        CFrame.lookAt(
-            hrp.Position,
-            enemyPosition
-        )
-end
-
---==================================================
--- UPDATE FARM
---==================================================
-
-local function updateFarm()
-
-    if not getgenv().AutoFarm then
-        return
-    end
-
-    local character = LocalPlayer.Character
-
-    if not character then
-        return
-    end
-
-    local hrp =
-        character:FindFirstChild("HumanoidRootPart")
-
-    if not hrp then
-        return
-    end
-
-    local humanoid =
-        character:FindFirstChildOfClass("Humanoid")
-
-    -- Keep AutoRotate disabled
-    if humanoid then
-        humanoid.AutoRotate = false
-    end
-
-    -- Recreate movement if necessary
-    if not bodyPosition
-        or bodyPosition.Parent ~= hrp
-        or not bodyGyro
-        or bodyGyro.Parent ~= hrp then
-
-        createMovement(hrp)
-    end
-
-    --==================================================
-    -- CHECK CURRENT TARGET
-    --==================================================
-
-    if currentTarget then
-
-        local enemy = currentTarget.entity
-
-        if not isEntityAlive(enemy) then
-
-            currentTarget = nil
-
-        else
-
-            local root =
-                enemy:FindFirstChild("HumanoidRootPart")
-                or enemy:FindFirstChildWhichIsA("BasePart")
-
-            if root then
-
-                currentTarget.part = root
-
-                local targetPosition, enemyPosition =
-                    getTargetPosition(root)
-
-                if targetPosition then
-
-                    -- Move toward target
-                    bodyPosition.Position =
-                        targetPosition
-
-                    -- CONSTANTLY FACE TARGET
-                    faceEnemy(
-                        hrp,
-                        enemyPosition
-                    )
+                if followConnection then
+                    followConnection:Disconnect()
+                    followConnection = nil
                 end
 
                 return
             end
 
-            currentTarget = nil
-        end
-    end
+            --==================================================
+            -- REFRESH ROOT
+            --==================================================
 
-    --==================================================
-    -- FIND NEW TARGET
-    --==================================================
+            local enemyRoot =
+                getEnemyRoot(enemy)
 
-    local newTarget = getClosestEnemy()
+            if not enemyRoot then
+                return
+            end
 
-    if newTarget then
+            targetData.part =
+                enemyRoot
 
-        currentTarget = newTarget
+            --==================================================
+            -- TARGET POSITION + ROTATION
+            --==================================================
 
-        print(
-            "[AutoFarm] Target:",
-            newTarget.entity.Name
-        )
+            local targetCFrame =
+                getTargetCFrame(enemyRoot)
 
-        local targetPosition, enemyPosition =
-            getTargetPosition(newTarget.part)
+            if targetCFrame then
 
-        if targetPosition then
+                -- Direct position + rotation
+                hrp.CFrame =
+                    targetCFrame
 
-            bodyPosition.Position =
-                targetPosition
+                -- Stop Humanoid from fighting
+                -- the farm rotation.
+                local humanoid =
+                    character:FindFirstChildOfClass(
+                        "Humanoid"
+                    )
 
-            faceEnemy(
-                hrp,
-                enemyPosition
-            )
-        end
-    end
+                if humanoid then
+                    humanoid.AutoRotate = false
+                end
+            end
+        end)
 end
 
 --==================================================
--- FARM UI
+-- FARM LOOP
+--==================================================
+
+local function startFarm()
+
+    if farmLoopRunning then
+        return
+    end
+
+    farmLoopRunning = true
+
+    task.spawn(function()
+
+        print("[AutoFarm] Enabled")
+
+        while getgenv().AutoFarm do
+
+            local character =
+                LocalPlayer.Character
+
+            local hrp =
+                character
+                and character:FindFirstChild(
+                    "HumanoidRootPart"
+                )
+
+            if not hrp then
+
+                task.wait(0.5)
+
+                continue
+            end
+
+            --==================================================
+            -- KEEP CURRENT TARGET
+            --==================================================
+
+            if currentTarget
+                and currentTarget.entity
+                and currentTarget.entity.Parent
+                and isEntityAlive(
+                    currentTarget.entity
+                ) then
+
+                task.wait(0.2)
+
+                continue
+            end
+
+            --==================================================
+            -- CURRENT TARGET LOST
+            --==================================================
+
+            if followConnection then
+
+                followConnection:Disconnect()
+                followConnection = nil
+
+            end
+
+            currentTarget = nil
+
+            --==================================================
+            -- FIND NEW TARGET
+            --==================================================
+
+            local target =
+                getClosestAliveTarget()
+
+            if target then
+
+                currentTarget =
+                    target
+
+                print(
+                    "[AutoFarm] New target:",
+                    target.entity.Name
+                )
+
+                startFollow(target)
+
+            else
+
+                task.wait(0.5)
+            end
+
+            task.wait(0.1)
+        end
+
+        stopFollow()
+
+        farmLoopRunning = false
+
+        print("[AutoFarm] Disabled")
+
+    end)
+end
+
+--==================================================
+-- FARM TAB
 --==================================================
 
 FarmTab:CreateSection({
     name = "Movement Settings"
 })
 
+-- Farm method
 FarmTab:CreateDropdown({
+
     name = "Farm Method",
 
     options = {
         "Behind",
         "Above",
         "Below",
-        "Circle"
+        "Circle",
     },
 
     value = "Above",
@@ -511,12 +648,17 @@ FarmTab:CreateDropdown({
     end,
 })
 
+-- Distance
 FarmTab:CreateSlider({
+
     name = "Farm Distance",
 
-    range = {1, 20},
+    range = {
+        1,
+        20
+    },
 
-    increment = 1,
+    increment = 0.5,
 
     value = 5,
 
@@ -531,37 +673,32 @@ FarmTab:CreateSlider({
     end,
 })
 
+-- Auto Farm
 FarmTab:CreateToggle({
+
     name = "Auto Farm",
 
     flag = "AutoFarm",
 
     callback = function(value)
 
-        getgenv().AutoFarm = value
+        getgenv().AutoFarm =
+            value
 
-        if not value then
+        if value then
 
-            cleanupMovement()
+            startFarm()
 
-            return
+        else
+
+            stopFollow()
+
         end
-
-        if farmConnection then
-            farmConnection:Disconnect()
-        end
-
-        farmConnection =
-            RunService.Heartbeat:Connect(function()
-
-                updateFarm()
-
-            end)
     end,
 })
 
 --==================================================
--- COMBAT UI
+-- COMBAT TAB
 --==================================================
 
 CombatTab:CreateSection({
@@ -573,19 +710,21 @@ CombatTab:CreateSection({
 --==================================================
 
 CombatTab:CreateToggle({
+
     name = "Auto M1",
 
     flag = "AutoM1",
 
     callback = function(value)
 
-        getgenv().AutoM1 = value
+        getgenv().AutoM1 =
+            value
 
     end,
 })
 
 --==================================================
--- MULTI SELECT SKILLS
+-- MULTI-SELECT SKILLS
 --==================================================
 
 CombatTab:CreateDropdown({
@@ -609,7 +748,8 @@ CombatTab:CreateDropdown({
 
     callback = function(selected)
 
-        SelectedSkills = selected
+        SelectedSkills =
+            selected
 
         print(
             "[Skills]",
@@ -633,7 +773,8 @@ CombatTab:CreateToggle({
 
     callback = function(value)
 
-        getgenv().AutoSkills = value
+        getgenv().AutoSkills =
+            value
 
     end,
 })
@@ -646,8 +787,12 @@ task.spawn(function()
 
     while true do
 
+        --==================================================
         -- M1
-        if getgenv().AutoM1 then
+        --==================================================
+
+        if getgenv().AutoM1
+            and hasAliveTargets() then
 
             pcall(function()
 
@@ -658,11 +803,17 @@ task.spawn(function()
             end)
         end
 
+        --==================================================
         -- SKILLS
+        --==================================================
+
         if getgenv().AutoSkills
+            and hasAliveTargets()
             and #SelectedSkills > 0 then
 
-            for _, skillName in ipairs(SelectedSkills) do
+            for _, skillName in ipairs(
+                SelectedSkills
+            ) do
 
                 local skillNumber =
                     tonumber(
@@ -692,29 +843,37 @@ task.spawn(function()
 end)
 
 --==================================================
--- RESPAWN
+-- RESPAWN HANDLING
 --==================================================
 
-LocalPlayer.CharacterAdded:Connect(function(character)
+LocalPlayer.CharacterAdded:Connect(
+    function(character)
 
-    currentTarget = nil
+        currentTarget = nil
 
-    if getgenv().AutoFarm then
+        if followConnection then
+
+            followConnection:Disconnect()
+            followConnection = nil
+
+        end
 
         task.wait(1)
 
-        local hrp =
-            character:WaitForChild(
-                "HumanoidRootPart",
-                5
-            )
+        if getgenv().AutoFarm then
 
-        if hrp and getgenv().AutoFarm then
-
-            createMovement(hrp)
+            startFarm()
 
         end
     end
-end)
+)
 
-print("[Testing] Combat & Farm loaded.")
+--==================================================
+-- CONFIGURATION
+--==================================================
+
+Rayfield:LoadConfiguration()
+
+print(
+    "[Testing] Combat & Farm loaded."
+)
