@@ -1,10 +1,8 @@
---// Rayfield Gen2
 local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
 
---// Window
 local Window = Rayfield:CreateWindow({
     name = "Testing",
-    subtitle = "Combat Hub",
+    subtitle = "Combat",
     theme = "default",
 
     configuration = {
@@ -14,37 +12,31 @@ local Window = Rayfield:CreateWindow({
     },
 })
 
---// Combat Tab
 local CombatTab = Window:CreateTab({
     name = "Combat",
 })
 
---// Variables
-local M1Enabled = false
-local Skill1Enabled = false
-local Skill2Enabled = false
-local Skill3Enabled = false
-local Skill4Enabled = false
+local Remotes = game:GetService("ReplicatedStorage").Player.Remotes.Inputs
+local Attack = Remotes.Attack
+local Skill = Remotes.Skill
 
---==================================================
+local AutoM1 = false
+local AutoSkill1 = false
+local AutoSkill2 = false
+local AutoSkill3 = false
+local AutoSkill4 = false
+
 -- M1
---==================================================
-
 CombatTab:CreateToggle({
     name = "Auto M1",
-    description = "Automatically uses your M1 attack.",
     flag = "AutoM1",
-
     callback = function(value)
-        M1Enabled = value
+        AutoM1 = value
 
-        if M1Enabled then
+        if value then
             task.spawn(function()
-                while M1Enabled do
-
-                    -- PUT YOUR M1 CODE HERE
-
-
+                while AutoM1 do
+                    Attack:FireServer(Vector3.new(0, 0, 0))
                     task.wait(0.1)
                 end
             end)
@@ -52,25 +44,17 @@ CombatTab:CreateToggle({
     end,
 })
 
---==================================================
--- SKILL 1
---==================================================
-
+-- Skill 1
 CombatTab:CreateToggle({
     name = "Auto Skill 1",
-    description = "Automatically uses Skill 1.",
     flag = "AutoSkill1",
-
     callback = function(value)
-        Skill1Enabled = value
+        AutoSkill1 = value
 
-        if Skill1Enabled then
+        if value then
             task.spawn(function()
-                while Skill1Enabled do
-
-                    -- PUT YOUR SKILL 1 CODE HERE
-
-
+                while AutoSkill1 do
+                    Skill:FireServer(1, "tap", Vector3.new(0, 0, 0))
                     task.wait(1)
                 end
             end)
@@ -78,25 +62,17 @@ CombatTab:CreateToggle({
     end,
 })
 
---==================================================
--- SKILL 2
---==================================================
-
+-- Skill 2
 CombatTab:CreateToggle({
     name = "Auto Skill 2",
-    description = "Automatically uses Skill 2.",
     flag = "AutoSkill2",
-
     callback = function(value)
-        Skill2Enabled = value
+        AutoSkill2 = value
 
-        if Skill2Enabled then
+        if value then
             task.spawn(function()
-                while Skill2Enabled do
-
-                    -- PUT YOUR SKILL 2 CODE HERE
-
-
+                while AutoSkill2 do
+                    Skill:FireServer(2, "tap", Vector3.new(0, 0, 0))
                     task.wait(1)
                 end
             end)
@@ -104,25 +80,17 @@ CombatTab:CreateToggle({
     end,
 })
 
---==================================================
--- SKILL 3
---==================================================
-
+-- Skill 3
 CombatTab:CreateToggle({
     name = "Auto Skill 3",
-    description = "Automatically uses Skill 3.",
     flag = "AutoSkill3",
-
     callback = function(value)
-        Skill3Enabled = value
+        AutoSkill3 = value
 
-        if Skill3Enabled then
+        if value then
             task.spawn(function()
-                while Skill3Enabled do
-
-                    -- PUT YOUR SKILL 3 CODE HERE
-
-
+                while AutoSkill3 do
+                    Skill:FireServer(3, "tap", Vector3.new(0, 0, 0))
                     task.wait(1)
                 end
             end)
@@ -130,44 +98,20 @@ CombatTab:CreateToggle({
     end,
 })
 
---==================================================
--- SKILL 4
---==================================================
-
+-- Skill 4
 CombatTab:CreateToggle({
     name = "Auto Skill 4",
-    description = "Automatically uses Skill 4.",
     flag = "AutoSkill4",
-
     callback = function(value)
-        Skill4Enabled = value
+        AutoSkill4 = value
 
-        if Skill4Enabled then
+        if value then
             task.spawn(function()
-                while Skill4Enabled do
-
-                    -- PUT YOUR SKILL 4 CODE HERE
-
-
+                while AutoSkill4 do
+                    Skill:FireServer(4, "tap", Vector3.new(0, 0, 0))
                     task.wait(1)
                 end
             end)
         end
     end,
-})
-
---==================================================
--- TEST BUTTON
---==================================================
-
-CombatTab:CreateButton({
-    name = "Test UI",
-    description = "Checks that the combat tab is working.",
-
-    callback = function()
-        Window:Notify({
-            title = "Testing",
-            content = "Combat UI is working!",
-        })
-    end,
-})
+})   
