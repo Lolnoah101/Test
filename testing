@@ -1,6 +1,9 @@
-```lua
+--==================================================
+-- FLUENT UI
+--==================================================
+
 local Fluent = loadstring(game:HttpGet(
-    "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
+    "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"
 ))()
 
 local Window = Fluent:CreateWindow({
@@ -13,6 +16,10 @@ local Window = Fluent:CreateWindow({
     MinimizeKey = Enum.KeyCode.LeftControl
 })
 
+--==================================================
+-- TABS
+--==================================================
+
 local Tabs = {
     Combat = Window:AddTab({
         Title = "Combat",
@@ -22,53 +29,61 @@ local Tabs = {
 
 local Options = Fluent.Options
 
--- =========================================================
--- REMOTES
--- =========================================================
+--==================================================
+-- SERVICES
+--==================================================
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local AttackRemote = ReplicatedStorage
-    :WaitForChild("Player")
-    :WaitForChild("Remotes")
-    :WaitForChild("Inputs")
-    :WaitForChild("Attack")
+--==================================================
+-- REMOTES
+--==================================================
 
-local SkillRemote = ReplicatedStorage
-    :WaitForChild("Player")
-    :WaitForChild("Remotes")
-    :WaitForChild("Inputs")
-    :WaitForChild("Skill")
+local Remotes = {
+    Attack = ReplicatedStorage
+        :WaitForChild("Player")
+        :WaitForChild("Remotes")
+        :WaitForChild("Inputs")
+        :WaitForChild("Attack"),
+
+    Skill = ReplicatedStorage
+        :WaitForChild("Player")
+        :WaitForChild("Remotes")
+        :WaitForChild("Inputs")
+        :WaitForChild("Skill")
+}
 
 print("[Combat] Attack remote found!")
 print("[Combat] Skill remote found!")
 
-
--- =========================================================
+--==================================================
 -- VARIABLES
--- =========================================================
+--==================================================
 
-local autoAttack = false
-local autoSkills = false
+local autoM1 = false
+local autoSkill1 = false
+local autoSkill2 = false
+local autoSkill3 = false
+local autoSkill4 = false
 
+--==================================================
+-- M1 ATTACK
+--==================================================
 
--- =========================================================
--- AUTO M1
--- =========================================================
-
-Tabs.Combat:AddToggle("AutoAttack", {
+Tabs.Combat:AddToggle("AutoM1", {
     Title = "Auto M1",
+    Description = "Automatically uses the basic attack.",
     Default = false,
 
     Callback = function(Value)
-        autoAttack = Value
+        autoM1 = Value
 
-        if autoAttack then
+        if Value then
             task.spawn(function()
-                while autoAttack do
+                while autoM1 do
 
                     pcall(function()
-                        AttackRemote:FireServer(
+                        Remotes.Attack:FireServer(
                             Vector3.new(0, 0, 0)
                         )
                     end)
@@ -80,59 +95,28 @@ Tabs.Combat:AddToggle("AutoAttack", {
     end
 })
 
+--==================================================
+-- SKILL 1
+--==================================================
 
--- =========================================================
--- SKILL SELECTION
--- =========================================================
-
-local SkillDropdown = Tabs.Combat:AddDropdown("SkillSelection", {
-    Title = "Select Skills",
-    Values = {
-        "1",
-        "2",
-        "3",
-        "4"
-    },
-    Multi = true,
-    Default = {}
-})
-
-
--- =========================================================
--- AUTO SKILLS
--- =========================================================
-
-Tabs.Combat:AddToggle("AutoSkills", {
-    Title = "Auto Skills",
+Tabs.Combat:AddToggle("AutoSkill1", {
+    Title = "Auto Skill 1",
     Default = false,
 
     Callback = function(Value)
-        autoSkills = Value
+        autoSkill1 = Value
 
-        if autoSkills then
+        if Value then
             task.spawn(function()
-                while autoSkills do
+                while autoSkill1 do
 
-                    local selectedSkills = SkillDropdown.Value
-
-                    for skillNumber, enabled in pairs(selectedSkills) do
-
-                        if not autoSkills then
-                            break
-                        end
-
-                        if enabled then
-                            pcall(function()
-                                SkillRemote:FireServer(
-                                    tonumber(skillNumber),
-                                    "tap",
-                                    Vector3.new(0, 0, 0)
-                                )
-                            end)
-
-                            task.wait(0.2)
-                        end
-                    end
+                    pcall(function()
+                        Remotes.Skill:FireServer(
+                            1,
+                            "tap",
+                            Vector3.new(0, 0, 0)
+                        )
+                    end)
 
                     task.wait(0.5)
                 end
@@ -141,16 +125,105 @@ Tabs.Combat:AddToggle("AutoSkills", {
     end
 })
 
+--==================================================
+-- SKILL 2
+--==================================================
 
--- =========================================================
--- MANUAL SKILLS
--- =========================================================
+Tabs.Combat:AddToggle("AutoSkill2", {
+    Title = "Auto Skill 2",
+    Default = false,
+
+    Callback = function(Value)
+        autoSkill2 = Value
+
+        if Value then
+            task.spawn(function()
+                while autoSkill2 do
+
+                    pcall(function()
+                        Remotes.Skill:FireServer(
+                            2,
+                            "tap",
+                            Vector3.new(0, 0, 0)
+                        )
+                    end)
+
+                    task.wait(0.5)
+                end
+            end)
+        end
+    end
+})
+
+--==================================================
+-- SKILL 3
+--==================================================
+
+Tabs.Combat:AddToggle("AutoSkill3", {
+    Title = "Auto Skill 3",
+    Default = false,
+
+    Callback = function(Value)
+        autoSkill3 = Value
+
+        if Value then
+            task.spawn(function()
+                while autoSkill3 do
+
+                    pcall(function()
+                        Remotes.Skill:FireServer(
+                            3,
+                            "tap",
+                            Vector3.new(0, 0, 0)
+                        )
+                    end)
+
+                    task.wait(0.5)
+                end
+            end)
+        end
+    end
+})
+
+--==================================================
+-- SKILL 4
+--==================================================
+
+Tabs.Combat:AddToggle("AutoSkill4", {
+    Title = "Auto Skill 4",
+    Default = false,
+
+    Callback = function(Value)
+        autoSkill4 = Value
+
+        if Value then
+            task.spawn(function()
+                while autoSkill4 do
+
+                    pcall(function()
+                        Remotes.Skill:FireServer(
+                            4,
+                            "tap",
+                            Vector3.new(0, 0, 0)
+                        )
+                    end)
+
+                    task.wait(0.5)
+                end
+            end)
+        end
+    end
+})
+
+--==================================================
+-- MANUAL SKILL BUTTONS
+--==================================================
 
 Tabs.Combat:AddButton({
     Title = "Use Skill 1",
 
     Callback = function()
-        SkillRemote:FireServer(
+        Remotes.Skill:FireServer(
             1,
             "tap",
             Vector3.new(0, 0, 0)
@@ -162,7 +235,7 @@ Tabs.Combat:AddButton({
     Title = "Use Skill 2",
 
     Callback = function()
-        SkillRemote:FireServer(
+        Remotes.Skill:FireServer(
             2,
             "tap",
             Vector3.new(0, 0, 0)
@@ -174,7 +247,7 @@ Tabs.Combat:AddButton({
     Title = "Use Skill 3",
 
     Callback = function()
-        SkillRemote:FireServer(
+        Remotes.Skill:FireServer(
             3,
             "tap",
             Vector3.new(0, 0, 0)
@@ -186,7 +259,7 @@ Tabs.Combat:AddButton({
     Title = "Use Skill 4",
 
     Callback = function()
-        SkillRemote:FireServer(
+        Remotes.Skill:FireServer(
             4,
             "tap",
             Vector3.new(0, 0, 0)
@@ -194,6 +267,12 @@ Tabs.Combat:AddButton({
     end
 })
 
+--==================================================
+-- SELECT COMBAT TAB
+--==================================================
 
+Window:SelectTab(1)
+
+print("[Combat Hub] Loaded successfully!")
 Window:SelectTab(1)
 ```
