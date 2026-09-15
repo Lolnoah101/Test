@@ -1,879 +1,4520 @@
-local Rayfield = loadstring(game:HttpGet("https://sirius.menu/gen2"))()
+--// ============================================================
+--// Fishing Hub - Rayfield Gen2
+--//
+--// FEATURES
+--//
+--// Water / Fish Farm
+--//   - Auto Water
+--//   - Auto Farm Fish
+--//   - Stage Drain Timeout
+--//   - Highest Price / Rarity fish selection
+--//
+--// Backpack / Fish
+--//   - Auto Home When Full
+--//   - Equip Best Fish
+--//   - Auto Sell All
+--//   - Sell Lock Rarity
+--//
+--// Eggs
+--//   - Egg selector
+--//   - Auto Open Egg
+--//   - Egg Auto Delete
+--//
+--// Cash
+--//   - Auto Collect Cash
+--//
+--// Purchases
+--//   - Auto Buy Best Aura
+--//   - Auto Buy Best Water Pump
+--//   - Auto Buy Upgrades
+--//
+--// Progression
+--//   - Auto Rebirth
+--//
+--// Misc
+--//   - Unload Hub
+--// ============================================================
 
---==================================================
--- WINDOW
---==================================================
+
+--// ============================================================
+--// RAYFIELD / SESSION BOOTSTRAP
+--// ============================================================
+
+-- Cleanly unload a previous copy before rebuilding the interface.
+if getgenv().__FISHING_HUB_UNLOAD then
+    pcall(getgenv().__FISHING_HUB_UNLOAD)
+    getgenv().__FISHING_HUB_UNLOAD = nil
+end
+
+-- Rayfield Gen2 Secure Mode MUST be enabled before Rayfield loads.
+getgenv().RAYFIELD_SECURE = true
+
+local Rayfield = loadstring(game:HttpGet(
+    "https://sirius.menu/gen2"
+))()
+
+
+--// ============================================================
+--// SERVICES
+--// ============================================================
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+
+
+--// ============================================================
+--// PLAYER
+--// ============================================================
+
+local LocalPlayer = Players.LocalPlayer
+
+
+--// ============================================================
+--// SETTINGS
+--// ============================================================
+
+local Settings = {
+
+    -- Water
+    AutoWater = false,
+
+    -- Throttle water requests instead of firing every Heartbeat.
+    WaterInterval = 0.10,
+
+    -- Fish Farm
+    AutoFarmFish = false,
+
+    FishFarmMode = "Highest Price",
+
+    FishRarity = "Any",
+
+    StageDrainTimeout = 10,
+
+    FishPickupDelay = 0.15,
+
+    -- Give the home/sell sequence time to actually clear the backpack.
+    BackpackResetTimeout = 4,
+
+    -- Small settle delay before the farm teleports back out.
+    FarmResumeDelay = 0.25,
+
+    -- Backpack
+    AutoHome = false,
+
+    AutoSellFish = false,
+
+    SellLockRarity = "OFF",
+
+    TeleportDelay = 0.35,
+
+    BestFishDelay = 0.35,
+
+    -- Eggs
+    AutoOpenEgg = false,
+
+    EggId = 4,
+
+    EggOpenAmount = 3,
+
+    EggOpenDelay = 0.15,
+
+    EggAutoDelete = true,
+
+    -- Cash
+    AutoCollectCash = false,
+
+    CashCollectDelay = 10,
+
+    -- Purchases
+    AutoBuyBestAura = false,
+
+    AutoBuyBestPump = false,
+
+    AutoBuyUpgrades = false,
+
+    -- Progression
+    AutoRebirth = false
+}
+
+
+--// ============================================================
+--// RARITIES
+--// ============================================================
+
+local FishRarities = {
+
+    "Common",
+    "Rare",
+    "Epic",
+    "Legendary",
+    "Mythic",
+    "Exotic",
+    "Secret",
+    "Celestial",
+    "Void",
+    "Divine",
+    "Transcendent",
+    "Eternal",
+    "Singularity",
+    "Genesis",
+    "Supreme",
+    "Exclusive"
+}
+
+
+local SellLockRarities = {
+
+    "OFF",
+
+    "Common",
+    "Rare",
+    "Epic",
+    "Legendary",
+    "Mythic",
+    "Exotic",
+    "Secret",
+    "Celestial",
+    "Void",
+    "Divine",
+    "Transcendent",
+    "Eternal",
+    "Singularity",
+    "Genesis",
+    "Supreme",
+    "Exclusive"
+}
+
+
+--// ============================================================
+--// RUNTIME
+--// ============================================================
+
+local HubRunning = true
+
+local Connections = {}
+
+-- Shared farm/backpack transition state.
+local BackpackSequenceBusy = false
+local BackpackFullHandled = false
+local FarmWaitingForBackpack = false
+
+
+local function TrackConnection(Connection)
+
+    table.insert(
+        Connections,
+        Connection
+    )
+
+    return Connection
+end
+
+
+--// ============================================================
+--// PLAYER DATA
+--// ============================================================
+
+local BackpackData =
+    LocalPlayer:WaitForChild(
+        "BackpackData"
+    )
+
+
+local AmountValue =
+    BackpackData:WaitForChild(
+        "amount"
+    )
+
+
+local CapacityValue =
+    BackpackData:WaitForChild(
+        "capacity"
+    )
+
+
+local CashFolder =
+    LocalPlayer:WaitForChild(
+        "Cash"
+    )
+
+
+local CashValue =
+    CashFolder:WaitForChild(
+        "cash"
+    )
+
+
+--// ============================================================
+--// PLAYER GUI
+--// ============================================================
+
+local PlayerGui =
+    LocalPlayer:WaitForChild(
+        "PlayerGui"
+    )
+
+
+local MainGui =
+    PlayerGui:WaitForChild(
+        "Main"
+    )
+
+
+local AuraScrollingFrame =
+    MainGui
+        :WaitForChild("Aura")
+        :WaitForChild("Main")
+        :WaitForChild("ScrollingFrame")
+
+
+local PumpScrollingFrame =
+    MainGui
+        :WaitForChild("Water Pump")
+        :WaitForChild("Main")
+        :WaitForChild("ScrollingFrame")
+
+
+local UpgradeScrollingFrame =
+    MainGui
+        :WaitForChild("Upgrades")
+        :WaitForChild("Main")
+        :WaitForChild("ScrollingFrame")
+
+
+local RebirthProgressLabel =
+    MainGui
+        :WaitForChild("Rebirth+1water")
+        :WaitForChild("UI1")
+        :WaitForChild("Progress bar")
+        :WaitForChild("TextLabel")
+
+
+--// ============================================================
+--// REMOTES
+--// ============================================================
+
+local RemoteFolder =
+    ReplicatedStorage:WaitForChild(
+        "Remote"
+    )
+
+
+local EventFolder =
+    RemoteFolder:WaitForChild(
+        "Event"
+    )
+
+
+local FunctionFolder =
+    RemoteFolder:WaitForChild(
+        "Function"
+    )
+
+
+-- Water
+
+local WaterEvent =
+    EventFolder
+        :WaitForChild("Level")
+        :WaitForChild("[C-S]Click")
+
+
+-- Aura
+
+local AuraBuyEvent =
+    EventFolder
+        :WaitForChild("Aura")
+        :WaitForChild("[C-S]BuyCashAura")
+
+
+-- Pump
+
+local PumpBuyEvent =
+    EventFolder
+        :WaitForChild("Pump")
+        :WaitForChild("[C-S]BuyCashPump")
+
+
+-- Upgrades
+
+local UpgradeBuyEvent =
+    EventFolder
+        :WaitForChild("Upgrade")
+        :WaitForChild("[C-S]BuyCashUpgrade")
+
+
+-- Rebirth
+
+local RebirthEvent =
+    EventFolder
+        :WaitForChild("Rebirth")
+        :WaitForChild("[C - S]TryRebirth")
+
+
+-- Fish
+
+local FishFunctionFolder =
+    FunctionFolder:WaitForChild(
+        "Fish"
+    )
+
+
+local BestFishEvent =
+    FunctionFolder
+        :WaitForChild("FishShow")
+        :WaitForChild("[C-S]BestFishUI")
+
+
+local SellAllFishEvent =
+    FishFunctionFolder:WaitForChild(
+        "[C-S]SellAllFish"
+    )
+
+
+local SetSellLockRarityEvent =
+    FishFunctionFolder:WaitForChild(
+        "[C-S]SetSellLockRarity"
+    )
+
+
+-- Eggs
+
+local EggFunctionFolder =
+    FunctionFolder:WaitForChild(
+        "Egg"
+    )
+
+
+local OpenEggFunction =
+    EggFunctionFolder:WaitForChild(
+        "[C-S]OpenEgg"
+    )
+
+
+--// ============================================================
+--// ENCODED NAMES
+--// ============================================================
+
+-- 玩家区域
+local PLAYER_AREA_NAME =
+    "\231\142\169\229\174\182\229\140\186\229\159\159"
+
+
+-- 放置按钮
+local PLACE_BUTTON_NAME =
+    "\230\148\190\231\189\174\230\140\137\233\146\174"
+
+
+-- 收集按钮
+local COLLECT_BUTTON_NAME =
+    "\230\148\182\233\155\134\230\140\137\233\146\174"
+
+
+-- 主场景
+local MAIN_SCENE_NAME =
+    "\228\184\187\229\156\186\230\153\175"
+
+
+-- 验证场景
+local FARM_SCENE_NAME =
+    "\233\170\140\232\175\129\229\156\186\230\153\175"
+
+
+-- 关卡
+local STAGE_PREFIX =
+    "\229\133\179\229\141\161"
+
+
+-- 水面
+local WATER_NAME =
+    "\230\176\180\233\157\162"
+
+
+--// ============================================================
+--// WORLD OBJECTS
+--// ============================================================
+
+local HomeTarget =
+    Workspace
+        :WaitForChild("PlayerEar")
+        :WaitForChild("2")
+        :WaitForChild(PLAYER_AREA_NAME)
+        :WaitForChild(PLACE_BUTTON_NAME)
+
+
+local EggZoneFolder =
+    Workspace:WaitForChild(
+        "UIOPEN"
+    )
+
+
+--// ============================================================
+--// WINDOW / NAVIGATION
+--// ============================================================
 
 local Window = Rayfield:CreateWindow({
-    name = "Testing",
-    subtitle = "Combat & Farm",
-    theme = "default",
+    name = "[UPD] +1 Drain Water Per Click",
+    subtitle = "By • HollowMoonHub",
+    sidebarLayout = true,
+    profile = "[UPD] +1 Drain Water Per Click",
+    showName = "HollowMoonHub",
+    showIconOnly = true,
+    theme = "cobalt",
+    fallbackFont = Enum.Font.Gotham,
 
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "TestingHubV5",
+        fileName = "[UPD] +1 Drain Water Per Click",
+        customFolder = "[UPD] +1 Drain Water Per Click"
     },
+
+    translations = {
+        es = {
+            ["Dashboard"] = "Panel",
+            ["Farm"] = "Granja",
+            ["Inventory"] = "Inventario",
+            ["Eggs"] = "Huevos",
+            ["Purchases"] = "Compras",
+            ["Progression"] = "Progreso",
+            ["Settings"] = "Configuración",
+            ["Diagnostics"] = "Diagnóstico",
+            ["Auto Water"] = "Agua automática",
+            ["Auto Farm Fish"] = "Pesca automática",
+            ["Auto Home When Full"] = "Volver a casa al llenarse",
+            ["Auto Sell All Fish"] = "Vender peces automáticamente",
+            ["Auto Open Egg"] = "Abrir huevo automáticamente",
+            ["Auto Collect Cash"] = "Recoger dinero automáticamente",
+            ["Auto Buy Best Aura"] = "Comprar mejor aura",
+            ["Auto Buy Best Water Pump"] = "Comprar mejor bomba",
+            ["Auto Buy Upgrades"] = "Comprar mejoras automáticamente",
+            ["Auto Rebirth"] = "Renacer automáticamente",
+            ["Theme"] = "Tema",
+            ["Language"] = "Idioma"
+        }
+    }
 })
 
---==================================================
--- SERVICES
---==================================================
-
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local LocalPlayer = Players.LocalPlayer
-
---==================================================
--- REMOTES
---==================================================
-
-local Remotes =
-    ReplicatedStorage
-        :WaitForChild("Player")
-        :WaitForChild("Remotes")
-        :WaitForChild("Inputs")
-
-local Attack = Remotes:WaitForChild("Attack")
-local Skill = Remotes:WaitForChild("Skill")
-
---==================================================
--- TABS
---==================================================
-
-local CombatTab = Window:CreateTab({
-    name = "Combat",
+local SecureTag = Window:CreateTag({
+    text = "SECURE",
+    color = Color3.fromRGB(65, 190, 120),
+    order = 1
 })
 
-local FarmTab = Window:CreateTab({
-    name = "Farm",
+local StatusTag = Window:CreateTag({
+    text = "IDLE",
+    color = Color3.fromRGB(115, 120, 135),
+    order = 2
 })
 
---==================================================
--- GLOBAL SETTINGS
---==================================================
+Window:CreateSection({ name = "Overview" })
+local DashboardTab = Window:CreateTab({ name = "Dashboard" })
 
-getgenv().AutoM1 = false
-getgenv().AutoSkills = false
-getgenv().AutoFarm = false
+Window:CreateSection({ name = "Automation" })
+local FarmTab = Window:CreateTab({ name = "Farm" })
+local InventoryTab = Window:CreateTab({ name = "Inventory" })
+local EggsTab = Window:CreateTab({ name = "Eggs" })
+local PurchasesTab = Window:CreateTab({ name = "Purchases" })
+local ProgressionTab = Window:CreateTab({ name = "Progression" })
 
---==================================================
--- COMBAT SETTINGS
---==================================================
+Window:CreateSection({ name = "Interface" })
+local SettingsTab = Window:CreateTab({ name = "Settings" })
+local DiagnosticsTab = Window:CreateTab({ name = "Diagnostics" })
 
-local SelectedSkills = {
-    "Skill 1"
-}
 
---==================================================
--- FARM SETTINGS
---==================================================
+--// ============================================================
+--// UTILITIES
+--// ============================================================
 
-local distance = 5
-local selectedMode = "Above"
-local circleSpeed = 3
+local function GetCharacter()
 
-local currentTarget = nil
-local followConnection = nil
-local farmLoopRunning = false
+    local Character =
+        LocalPlayer.Character
 
---==================================================
--- ENEMY ALIVE CHECK
---==================================================
 
-local function isEntityAlive(entity)
+    if not Character then
 
-    if not entity or not entity.Parent then
+        Character =
+            LocalPlayer.CharacterAdded:Wait()
+
+    end
+
+
+    return Character
+end
+
+
+local function GetRoot()
+
+    local Character =
+        LocalPlayer.Character
+
+
+    if not Character then
+        return nil
+    end
+
+
+    return Character:FindFirstChild(
+        "HumanoidRootPart"
+    )
+end
+
+
+local function TeleportToCFrame(
+    Target
+)
+
+    local Character =
+        GetCharacter()
+
+
+    local Root =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+
+    if not Root then
         return false
     end
 
-    -- Humanoid
-    local humanoid =
-        entity:FindFirstChildOfClass("Humanoid")
 
-    if humanoid then
-        return humanoid.Health > 0
-    end
-
-    -- Dead attribute
-    if entity:GetAttribute("Dead") == true then
-        return false
-    end
-
-    -- Health attribute
-    local healthAttribute =
-        entity:GetAttribute("Health")
-
-    if healthAttribute ~= nil then
-
-        local health =
-            tonumber(healthAttribute)
-
-        if health then
-            return health > 0
-        end
-    end
-
-    -- Health NumberValue
-    local healthValue =
-        entity:FindFirstChild("Health")
-
-    if healthValue
-        and healthValue:IsA("NumberValue") then
-
-        return healthValue.Value > 0
-    end
-
-    return false
-end
-
---==================================================
--- ENEMY FOLDERS
---==================================================
-
-local function getEnemyFolders()
-
-    local npcFolder =
-        workspace:FindFirstChild("NPCs")
-
-    local bossFolder =
-        workspace:FindFirstChild("Boss")
-
-    return npcFolder, bossFolder
-end
-
---==================================================
--- GET ROOT PART
---==================================================
-
-local function getEnemyRoot(entity)
-
-    if not entity then
-        return nil
-    end
-
-    return
-        entity:FindFirstChild("HumanoidRootPart")
-        or entity.PrimaryPart
-        or entity:FindFirstChildWhichIsA("BasePart")
-end
-
---==================================================
--- GET CLOSEST ENEMY IN FOLDER
---==================================================
-
-local function getClosestInFolder(folder)
-
-    if not folder then
-        return nil
-    end
-
-    local character =
-        LocalPlayer.Character
-
-    if not character then
-        return nil
-    end
-
-    local hrp =
-        character:FindFirstChild("HumanoidRootPart")
-
-    if not hrp then
-        return nil
-    end
-
-    local closest = nil
-    local closestDistance = math.huge
-
-    for _, entity in ipairs(folder:GetChildren()) do
-
-        if isEntityAlive(entity) then
-
-            local root =
-                getEnemyRoot(entity)
-
-            if root then
-
-                local currentDistance =
-                    (hrp.Position - root.Position).Magnitude
-
-                if currentDistance < closestDistance then
-
-                    closestDistance = currentDistance
-
-                    closest = {
-                        entity = entity,
-                        part = root,
-                        distance = currentDistance,
-                    }
-                end
-            end
-        end
-    end
-
-    return closest
-end
-
---==================================================
--- GET CLOSEST TARGET
---==================================================
-
-local function getClosestAliveTarget()
-
-    local npcFolder, bossFolder =
-        getEnemyFolders()
-
-    -- NPCs have priority
-    local npcTarget =
-        getClosestInFolder(npcFolder)
-
-    if npcTarget then
-        return npcTarget
-    end
-
-    -- Bosses second
-    local bossTarget =
-        getClosestInFolder(bossFolder)
-
-    if bossTarget then
-        return bossTarget
-    end
-
-    return nil
-end
-
---==================================================
--- HAS ALIVE TARGET
---==================================================
-
-local function hasAliveTargets()
-
-    local npcFolder, bossFolder =
-        getEnemyFolders()
-
-    if npcFolder then
-
-        for _, npc in ipairs(npcFolder:GetChildren()) do
-
-            if isEntityAlive(npc) then
-                return true
-            end
-        end
-    end
-
-    if bossFolder then
-
-        for _, boss in ipairs(bossFolder:GetChildren()) do
-
-            if isEntityAlive(boss) then
-                return true
-            end
-        end
-    end
-
-    return false
-end
-
---==================================================
--- TARGET CFRAME
---==================================================
-
-local function getTargetCFrame(enemyPart)
-
-    if not enemyPart
-        or not enemyPart.Parent then
-
-        return nil
-    end
-
-    local enemyPosition =
-        enemyPart.Position
-
-    --==================================================
-    -- ABOVE
-    --==================================================
-
-    if selectedMode == "Above" then
-
-        local position =
-            enemyPosition
-            + Vector3.new(0, distance, 0)
-
-        return CFrame.lookAt(
-            position,
-            enemyPosition + Vector3.new(0, 2, 0)
-        )
-    end
-
-    --==================================================
-    -- BELOW
-    --==================================================
-
-    if selectedMode == "Below" then
-
-        local position =
-            enemyPosition
-            - Vector3.new(0, distance, 0)
-
-        return CFrame.lookAt(
-            position,
-            enemyPosition
-        )
-    end
-
-    --==================================================
-    -- BEHIND
-    --==================================================
-
-    if selectedMode == "Behind" then
-
-        local lookVector =
-            enemyPart.CFrame.LookVector
-
-        if lookVector.Magnitude < 0.1 then
-
-            lookVector =
-                Vector3.new(0, 0, -1)
-        end
-
-        local position =
-            enemyPosition
-            - lookVector * distance
-            + Vector3.new(0, 2, 0)
-
-        return CFrame.lookAt(
-            position,
-            enemyPosition
-        )
-    end
-
-    --==================================================
-    -- CIRCLE
-    --==================================================
-
-    if selectedMode == "Circle" then
-
-        local angle =
-            os.clock() * circleSpeed
-
-        local offset =
-            Vector3.new(
-                math.cos(angle) * distance,
-                1,
-                math.sin(angle) * distance
-            )
-
-        local position =
-            enemyPosition + offset
-
-        return CFrame.lookAt(
-            position,
-            enemyPosition
-        )
-    end
-
-    return nil
-end
-
---==================================================
--- STOP FOLLOW
---==================================================
-
-local function stopFollow()
-
-    if followConnection then
-
-        followConnection:Disconnect()
-        followConnection = nil
-
-    end
-
-    currentTarget = nil
-
-    local character =
-        LocalPlayer.Character
-
-    if character then
-
-        local humanoid =
-            character:FindFirstChildOfClass("Humanoid")
-
-        if humanoid then
-            humanoid.AutoRotate = true
-        end
-    end
-end
-
---==================================================
--- START FOLLOW
---==================================================
-
-local function startFollow(targetData)
-
-    if not targetData
-        or not targetData.entity then
-
-        return
-    end
-
-    if followConnection then
-
-        followConnection:Disconnect()
-        followConnection = nil
-
-    end
-
-    local player =
-        LocalPlayer
-
-    print(
-        "[AutoFarm] Following:",
-        targetData.entity.Name
+    Character:PivotTo(
+        Target
     )
 
-    followConnection =
-        RunService.Heartbeat:Connect(function()
 
-            if not getgenv().AutoFarm then
-                return
-            end
-
-            local character =
-                player.Character
-
-            if not character then
-                return
-            end
-
-            local hrp =
-                character:FindFirstChild(
-                    "HumanoidRootPart"
-                )
-
-            if not hrp then
-                return
-            end
-
-            local enemy =
-                targetData.entity
-
-            --==================================================
-            -- TARGET CHECK
-            --==================================================
-
-            if not enemy
-                or not enemy.Parent
-                or not isEntityAlive(enemy) then
-
-                currentTarget = nil
-
-                if followConnection then
-                    followConnection:Disconnect()
-                    followConnection = nil
-                end
-
-                return
-            end
-
-            --==================================================
-            -- REFRESH ROOT
-            --==================================================
-
-            local enemyRoot =
-                getEnemyRoot(enemy)
-
-            if not enemyRoot then
-                return
-            end
-
-            targetData.part =
-                enemyRoot
-
-            --==================================================
-            -- TARGET POSITION + ROTATION
-            --==================================================
-
-            local targetCFrame =
-                getTargetCFrame(enemyRoot)
-
-            if targetCFrame then
-
-                -- Direct position + rotation
-                hrp.CFrame =
-                    targetCFrame
-
-                -- Stop Humanoid from fighting
-                -- the farm rotation.
-                local humanoid =
-                    character:FindFirstChildOfClass(
-                        "Humanoid"
-                    )
-
-                if humanoid then
-                    humanoid.AutoRotate = false
-                end
-            end
-        end)
+    return true
 end
 
---==================================================
--- FARM LOOP
---==================================================
 
-local function startFarm()
+--// ============================================================
+--// BASE
+--// ============================================================
 
-    if farmLoopRunning then
-        return
+local function GetBaseArea()
+
+    return Workspace
+        :WaitForChild("PlayerEar")
+        :WaitForChild("2")
+        :WaitForChild(PLAYER_AREA_NAME)
+end
+
+
+local function GetHomeCFrame()
+
+    if HomeTarget:IsA(
+        "BasePart"
+    ) then
+
+        return HomeTarget.CFrame
     end
 
-    farmLoopRunning = true
+
+    if HomeTarget:IsA(
+        "Model"
+    ) then
+
+        return HomeTarget:GetPivot()
+    end
+
+
+    if HomeTarget:IsA(
+        "Attachment"
+    ) then
+
+        return HomeTarget.WorldCFrame
+    end
+
+
+    local Part =
+        HomeTarget:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
+
+
+    if Part then
+
+        return Part.CFrame
+    end
+
+
+    return nil
+end
+
+
+local function TeleportHome()
+
+    local Target =
+        GetHomeCFrame()
+
+
+    if not Target then
+
+        warn(
+            "[Auto Home] Home target missing"
+        )
+
+        return false
+    end
+
+
+    return TeleportToCFrame(
+
+        Target
+        * CFrame.new(
+            0,
+            3,
+            0
+        )
+    )
+end
+
+
+--// ============================================================
+--// AUTO WATER
+--// ============================================================
+
+local AutoWaterLoopID = 0
+
+
+local function WaterOnce()
+
+    if not HubRunning then
+        return false
+    end
+
+    local Success = pcall(function()
+
+        WaterEvent:FireServer(
+            163
+        )
+
+    end)
+
+    return Success
+end
+
+
+local function StartAutoWater()
+
+    AutoWaterLoopID += 1
+
+    local ID =
+        AutoWaterLoopID
 
     task.spawn(function()
 
-        print("[AutoFarm] Enabled")
+        while
+            HubRunning
+            and Settings.AutoWater
+            and ID == AutoWaterLoopID
+        do
 
-        while getgenv().AutoFarm do
+            -- Don't spam the water remote while the farm is returning
+            -- home, equipping, selling, or waiting for backpack space.
+            if
+                not BackpackSequenceBusy
+                and not FarmWaitingForBackpack
+            then
 
-            local character =
-                LocalPlayer.Character
+                WaterOnce()
 
-            local hrp =
-                character
-                and character:FindFirstChild(
-                    "HumanoidRootPart"
+            end
+
+            task.wait(
+                math.max(
+                    tonumber(Settings.WaterInterval) or 0.10,
+                    0.03
                 )
+            )
 
-            if not hrp then
-
-                task.wait(0.5)
-
-                continue
-            end
-
-            --==================================================
-            -- KEEP CURRENT TARGET
-            --==================================================
-
-            if currentTarget
-                and currentTarget.entity
-                and currentTarget.entity.Parent
-                and isEntityAlive(
-                    currentTarget.entity
-                ) then
-
-                task.wait(0.2)
-
-                continue
-            end
-
-            --==================================================
-            -- CURRENT TARGET LOST
-            --==================================================
-
-            if followConnection then
-
-                followConnection:Disconnect()
-                followConnection = nil
-
-            end
-
-            currentTarget = nil
-
-            --==================================================
-            -- FIND NEW TARGET
-            --==================================================
-
-            local target =
-                getClosestAliveTarget()
-
-            if target then
-
-                currentTarget =
-                    target
-
-                print(
-                    "[AutoFarm] New target:",
-                    target.entity.Name
-                )
-
-                startFollow(target)
-
-            else
-
-                task.wait(0.5)
-            end
-
-            task.wait(0.1)
         end
-
-        stopFollow()
-
-        farmLoopRunning = false
-
-        print("[AutoFarm] Disabled")
 
     end)
 end
 
---==================================================
--- FARM TAB
---==================================================
 
-FarmTab:CreateSection({
-    name = "Movement Settings"
-})
+local function StopAutoWater()
 
--- Farm method
-FarmTab:CreateDropdown({
+    Settings.AutoWater =
+        false
 
-    name = "Farm Method",
+    AutoWaterLoopID += 1
+end
 
-    options = {
-        "Behind",
-        "Above",
-        "Below",
-        "Circle",
-    },
 
-    value = "Above",
+--// ============================================================
+--// BEST FISH
+--// ============================================================
 
-    flag = "FarmMode",
+local function EquipBestFish()
 
-    callback = function(value)
+    local Success, Result =
+        pcall(function()
 
-        selectedMode = value
+            return BestFishEvent:InvokeServer()
 
-    end,
-})
+        end)
 
--- Distance
-FarmTab:CreateSlider({
 
-    name = "Farm Distance",
+    if not Success then
 
-    range = {
-        1,
-        20
-    },
+        warn(
+            "[Best Fish]",
+            Result
+        )
 
-    increment = 0.5,
+        return false
+    end
 
-    value = 5,
 
-    suffix = " studs",
+    return true
+end
 
-    flag = "FarmDistance",
 
-    callback = function(value)
+--// ============================================================
+--// SELL LOCK
+--// ============================================================
 
-        distance = value
+local function ApplySellLockRarity()
 
-    end,
-})
+    local Rarity =
+        Settings.SellLockRarity
+        or "OFF"
 
--- Auto Farm
-FarmTab:CreateToggle({
 
-    name = "Auto Farm",
+    local Success, Result =
+        pcall(function()
 
-    flag = "AutoFarm",
+            return SetSellLockRarityEvent:InvokeServer(
+                Rarity
+            )
 
-    callback = function(value)
+        end)
 
-        getgenv().AutoFarm =
-            value
 
-        if value then
+    if not Success then
 
-            startFarm()
+        warn(
+            "[Sell Lock]",
+            Result
+        )
 
-        else
 
-            stopFollow()
+        return false
+    end
+
+
+    print(
+        "[Sell Lock]",
+        Rarity
+    )
+
+
+    return true
+end
+
+
+--// ============================================================
+--// SELL ALL
+--// ============================================================
+
+local function SellAllFish()
+
+    if not HubRunning then
+        return false
+    end
+
+
+    if not ApplySellLockRarity() then
+
+        warn(
+            "[Auto Sell] Lock failed. Sell cancelled."
+        )
+
+
+        return false
+    end
+
+
+    task.wait(0.05)
+
+
+    local Success, Result =
+        pcall(function()
+
+            return SellAllFishEvent:InvokeServer(
+                "OFF",
+                false
+            )
+
+        end)
+
+
+    if not Success then
+
+        warn(
+            "[Auto Sell]",
+            Result
+        )
+
+
+        return false
+    end
+
+
+    print(
+        "[Auto Sell] Completed"
+    )
+
+
+    return true
+end
+
+
+--// ============================================================
+--// BACKPACK
+--// ============================================================
+
+local function GetBackpackNumbers()
+
+    return
+
+        tonumber(
+            AmountValue.Value
+        ) or 0,
+
+        tonumber(
+            CapacityValue.Value
+        ) or 0
+end
+
+
+local function IsBackpackFull()
+
+    local Amount, Capacity =
+        GetBackpackNumbers()
+
+
+    return
+
+        Capacity > 0
+
+        and Amount >= Capacity
+end
+
+
+--// ============================================================
+--// AUTO HOME
+--// ============================================================
+
+local CheckBackpack
+
+
+local function WaitForBackpackSpace(Timeout)
+
+    local Started =
+        os.clock()
+
+    while
+        HubRunning
+        and Settings.AutoHome
+        and os.clock() - Started < Timeout
+    do
+
+        local Amount, Capacity =
+            GetBackpackNumbers()
+
+        if
+            Capacity > 0
+            and Amount < Capacity
+        then
+
+            return true
 
         end
-    end,
-})
 
---==================================================
--- COMBAT TAB
---==================================================
+        task.wait(0.10)
+    end
 
-CombatTab:CreateSection({
-    name = "Auto Combat"
-})
+    return false
+end
 
---==================================================
--- AUTO M1
---==================================================
 
-CombatTab:CreateToggle({
+CheckBackpack = function()
 
-    name = "Auto M1",
+    if
+        not HubRunning
+        or not Settings.AutoHome
+    then
 
-    flag = "AutoM1",
+        return
+    end
 
-    callback = function(value)
 
-        getgenv().AutoM1 =
-            value
+    local Amount, Capacity =
+        GetBackpackNumbers()
 
-    end,
-})
 
---==================================================
--- MULTI-SELECT SKILLS
---==================================================
+    if
+        Capacity <= 0
+        or Amount < Capacity
+    then
 
-CombatTab:CreateDropdown({
+        BackpackFullHandled =
+            false
 
-    name = "Select Skills",
+        return
+    end
 
-    multiSelect = true,
 
-    options = {
-        "Skill 1",
-        "Skill 2",
-        "Skill 3",
-        "Skill 4",
-    },
+    if
+        BackpackSequenceBusy
+        or BackpackFullHandled
+    then
 
-    value = {
-        "Skill 1"
-    },
+        return
+    end
 
-    flag = "SelectedSkills",
 
-    callback = function(selected)
+    BackpackSequenceBusy =
+        true
 
-        SelectedSkills =
-            selected
 
-        print(
-            "[Skills]",
-            table.concat(
-                selected,
-                ", "
-            )
-        )
-    end,
-})
+    task.spawn(function()
 
---==================================================
--- AUTO SKILLS
---==================================================
+        local Success =
+            false
 
-CombatTab:CreateToggle({
 
-    name = "Auto Skills",
+        for Attempt = 1, 3 do
 
-    flag = "AutoSkills",
+            if
+                not HubRunning
+                or not Settings.AutoHome
+            then
 
-    callback = function(value)
+                break
+            end
 
-        getgenv().AutoSkills =
-            value
 
-    end,
-})
+            if TeleportHome() then
 
---==================================================
--- COMBAT LOOP
---==================================================
-
-task.spawn(function()
-
-    while true do
-
-        --==================================================
-        -- M1
-        --==================================================
-
-        if getgenv().AutoM1
-            and hasAliveTargets() then
-
-            pcall(function()
-
-                Attack:FireServer(
-                    Vector3.new(0, 0, 0)
+                task.wait(
+                    Settings.TeleportDelay
                 )
 
-            end)
-        end
 
-        --==================================================
-        -- SKILLS
-        --==================================================
+                if EquipBestFish() then
 
-        if getgenv().AutoSkills
-            and hasAliveTargets()
-            and #SelectedSkills > 0 then
-
-            for _, skillName in ipairs(
-                SelectedSkills
-            ) do
-
-                local skillNumber =
-                    tonumber(
-                        string.match(
-                            skillName,
-                            "%d+"
-                        )
+                    task.wait(
+                        Settings.BestFishDelay
                     )
 
-                if skillNumber then
 
-                    pcall(function()
+                    if Settings.AutoSellFish then
 
-                        Skill:FireServer(
-                            skillNumber,
-                            "tap",
-                            Vector3.new(0, 0, 0)
-                        )
+                        local SellRequested =
+                            SellAllFish()
 
-                    end)
+                        if SellRequested then
+
+                            -- A successful InvokeServer call does not
+                            -- guarantee BackpackData has updated yet.
+                            -- Wait until we can confirm there is space.
+                            if WaitForBackpackSpace(
+                                Settings.BackpackResetTimeout
+                            ) then
+
+                                Success =
+                                    true
+
+                                break
+                            end
+
+                        end
+
+                    else
+
+                        -- Auto Home can still be used without Auto Sell.
+                        -- In that case stay home and wait for the user
+                        -- to manually create backpack space.
+                        Success =
+                            true
+
+                        break
+                    end
+
                 end
+
             end
+
+
+            task.wait(0.50)
+
         end
 
-        task.wait(0.1)
+
+        BackpackSequenceBusy =
+            false
+
+
+        -- Only keep the "handled" latch set if the backpack is
+        -- STILL full. If selling created space, immediately re-arm
+        -- the system for the next full backpack.
+        BackpackFullHandled =
+            Success and IsBackpackFull()
+
+
+        if
+            not Success
+            and HubRunning
+            and Settings.AutoHome
+            and IsBackpackFull()
+        then
+
+            task.delay(
+                0.75,
+                function()
+
+                    if
+                        HubRunning
+                        and Settings.AutoHome
+                        and IsBackpackFull()
+                    then
+
+                        BackpackFullHandled =
+                            false
+
+                        CheckBackpack()
+
+                    end
+
+                end
+            )
+
+        end
+
+    end)
+end
+
+
+--// ============================================================
+--// BACKPACK WATCHER
+--// ============================================================
+
+local BackpackWatchID =
+    0
+
+
+local function StartBackpackWatcher()
+
+    BackpackWatchID += 1
+
+
+    local ID =
+        BackpackWatchID
+
+
+    task.spawn(function()
+
+        while
+            HubRunning
+            and Settings.AutoHome
+            and ID == BackpackWatchID
+        do
+
+            CheckBackpack()
+
+            task.wait(0.25)
+
+        end
+
+    end)
+end
+
+
+local function StopBackpackWatcher()
+
+    BackpackWatchID += 1
+end
+
+
+--// ============================================================
+--// AUTO COLLECT CASH
+--// ============================================================
+
+local AutoCollectLoopID =
+    0
+
+
+local function GetCollectTouch()
+
+    local Area =
+        GetBaseArea()
+
+
+    local Button =
+        Area:FindFirstChild(
+            COLLECT_BUTTON_NAME
+        )
+
+
+    if not Button then
+        return nil
+    end
+
+
+    local Touch =
+        Button:FindFirstChild(
+            "Touch"
+        )
+
+
+    if
+        Touch
+        and Touch:IsA(
+            "BasePart"
+        )
+    then
+
+        return Touch
+
+    end
+
+
+    return nil
+end
+
+
+local function CollectCashOnce()
+
+    local Root =
+        GetRoot()
+
+
+    local Touch =
+        GetCollectTouch()
+
+
+    if
+        not Root
+        or not Touch
+    then
+
+        return
+    end
+
+
+    if typeof(
+        firetouchinterest
+    ) ~= "function"
+    then
+
+        return
+    end
+
+
+    pcall(function()
+
+        firetouchinterest(
+            Root,
+            Touch,
+            0
+        )
+
+
+        task.wait(0.05)
+
+
+        firetouchinterest(
+            Root,
+            Touch,
+            1
+        )
+
+    end)
+end
+
+
+local function StartAutoCollectCash()
+
+    AutoCollectLoopID += 1
+
+
+    local ID =
+        AutoCollectLoopID
+
+
+    task.spawn(function()
+
+        CollectCashOnce()
+
+
+        while
+            HubRunning
+            and Settings.AutoCollectCash
+            and ID == AutoCollectLoopID
+        do
+
+            task.wait(
+                Settings.CashCollectDelay
+            )
+
+
+            CollectCashOnce()
+
+        end
+
+    end)
+end
+
+
+local function StopAutoCollectCash()
+
+    Settings.AutoCollectCash =
+        false
+
+
+    AutoCollectLoopID += 1
+end
+
+
+--// ============================================================
+--// PRICE PARSER
+--// ============================================================
+
+local PriceSuffixes = {
+
+    [""] = 1,
+
+    ["k"] = 1e3,
+    ["m"] = 1e6,
+    ["b"] = 1e9,
+    ["t"] = 1e12,
+
+    ["qa"] = 1e15,
+    ["qi"] = 1e18,
+
+    ["sx"] = 1e21,
+    ["sp"] = 1e24,
+
+    ["oc"] = 1e27,
+    ["no"] = 1e30,
+
+    ["dc"] = 1e33
+}
+
+
+local function ParsePrice(
+    Text
+)
+
+    if typeof(Text)
+        ~= "string"
+    then
+
+        return nil
+    end
+
+
+    local Clean =
+        string.lower(
+            Text
+        )
+
+
+    Clean =
+        Clean:gsub(",", "")
+
+    Clean =
+        Clean:gsub("%$", "")
+
+    Clean =
+        Clean:gsub("%s+", "")
+
+
+    local NumberText, Suffix =
+        Clean:match(
+            "^([%d%.]+)([%a]*)$"
+        )
+
+
+    if not NumberText then
+        return nil
+    end
+
+
+    local Number =
+        tonumber(
+            NumberText
+        )
+
+
+    local Multiplier =
+        PriceSuffixes[
+            Suffix
+        ]
+
+
+    if
+        not Number
+        or not Multiplier
+    then
+
+        return nil
+    end
+
+
+    return
+        Number
+        * Multiplier
+end
+
+
+--// ============================================================
+--// AURA
+--// ============================================================
+
+local function GetAuraInfo(
+    Card
+)
+
+    local ID =
+        tonumber(
+            Card.Name
+        )
+
+
+    if not ID then
+        return nil
+    end
+
+
+    local Sellall =
+        Card:FindFirstChild(
+            "Sellall"
+        )
+
+
+    if not Sellall then
+        return nil
+    end
+
+
+    local Name =
+        "Aura "
+        .. tostring(ID)
+
+
+    local Flame =
+        Sellall:FindFirstChild(
+            "Flame"
+        )
+
+
+    local NameLabel =
+        Flame
+        and Flame:FindFirstChild(
+            "name"
+        )
+
+
+    if NameLabel then
+
+        Name =
+            NameLabel.Text
+
+    end
+
+
+    local Owned =
+        false
+
+
+    local EquipFolder =
+        Sellall:FindFirstChild(
+            "zhuangbei"
+        )
+
+
+    local EquipBian =
+        EquipFolder
+        and EquipFolder:FindFirstChild(
+            "Bian"
+        )
+
+
+    local EquipLabel =
+        EquipBian
+        and EquipBian:FindFirstChild(
+            "TextLabel"
+        )
+
+
+    if EquipLabel then
+
+        local Text =
+            string.lower(
+                tostring(
+                    EquipLabel.Text
+                )
+            )
+
+
+        Owned =
+
+            Text == "equip"
+
+            or Text == "unequip"
+
+    end
+
+
+    local Sell1 =
+        Sellall:FindFirstChild(
+            "Sell1"
+        )
+
+
+    local PriceBian =
+        Sell1
+        and Sell1:FindFirstChild(
+            "Bian"
+        )
+
+
+    local PriceLabel =
+        PriceBian
+        and PriceBian:FindFirstChild(
+            "TextLabel"
+        )
+
+
+    local PriceText =
+        PriceLabel
+        and PriceLabel.Text
+
+
+    return {
+
+        id = ID,
+
+        name = Name,
+
+        owned = Owned,
+
+        price =
+            PriceText
+            and ParsePrice(
+                PriceText
+            ),
+
+        card = Card
+    }
+end
+
+
+local function FindNextAura()
+
+    local List = {}
+
+
+    for _, Card in ipairs(
+        AuraScrollingFrame:GetChildren()
+    ) do
+
+        local Info =
+            GetAuraInfo(
+                Card
+            )
+
+
+        if Info then
+
+            table.insert(
+                List,
+                Info
+            )
+
+        end
+
+    end
+
+
+    table.sort(
+        List,
+
+        function(A, B)
+
+            return A.id < B.id
+
+        end
+    )
+
+
+    for _, Info in ipairs(
+        List
+    ) do
+
+        if
+            not Info.owned
+            and Info.price
+        then
+
+            return Info
+
+        end
+
+    end
+
+
+    return nil
+end
+
+
+local CurrentAuraTarget =
+    nil
+
+
+local AuraBuying =
+    false
+
+
+local function RefreshAuraTarget()
+
+    CurrentAuraTarget =
+        FindNextAura()
+end
+
+
+local function BuyTargetAura()
+
+    if
+        not HubRunning
+        or not Settings.AutoBuyBestAura
+        or AuraBuying
+    then
+
+        return
+    end
+
+
+    if not CurrentAuraTarget then
+
+        RefreshAuraTarget()
+
+    end
+
+
+    local Aura =
+        CurrentAuraTarget
+
+
+    if not Aura then
+        return
+    end
+
+
+    local Updated =
+        GetAuraInfo(
+            Aura.card
+        )
+
+
+    if
+        Updated
+        and Updated.owned
+    then
+
+        RefreshAuraTarget()
+
+        Aura =
+            CurrentAuraTarget
+
+    end
+
+
+    if not Aura then
+        return
+    end
+
+
+    local Cash =
+        tonumber(
+            CashValue.Value
+        ) or 0
+
+
+    if Cash < Aura.price then
+        return
+    end
+
+
+    AuraBuying =
+        true
+
+
+    local CashBefore =
+        Cash
+
+
+    pcall(function()
+
+        AuraBuyEvent:FireServer(
+            Aura.id
+        )
+
+    end)
+
+
+    task.spawn(function()
+
+        local Started =
+            os.clock()
+
+
+        while
+            HubRunning
+            and os.clock() - Started < 3
+        do
+
+            task.wait(0.1)
+
+
+            local Info =
+                GetAuraInfo(
+                    Aura.card
+                )
+
+
+            local NewCash =
+                tonumber(
+                    CashValue.Value
+                ) or 0
+
+
+            if
+                (
+                    Info
+                    and Info.owned
+                )
+                or NewCash < CashBefore
+            then
+
+                AuraBuying =
+                    false
+
+
+                RefreshAuraTarget()
+
+                BuyTargetAura()
+
+                return
+
+            end
+
+        end
+
+
+        AuraBuying =
+            false
+
+    end)
+end
+
+
+local function CheckAuraCash()
+
+    if
+        not HubRunning
+        or not Settings.AutoBuyBestAura
+    then
+
+        return
+    end
+
+
+    if not CurrentAuraTarget then
+
+        RefreshAuraTarget()
+
+    end
+
+
+    if
+        CurrentAuraTarget
+        and tonumber(
+            CashValue.Value
+        ) >= CurrentAuraTarget.price
+    then
+
+        BuyTargetAura()
+
+    end
+end
+
+
+--// ============================================================
+--// WATER PUMP
+--// ============================================================
+
+local function GetPumpInfo(
+    Card
+)
+
+    local ID =
+        tonumber(
+            Card.Name
+        )
+
+
+    if not ID then
+        return nil
+    end
+
+
+    local Sellall =
+        Card:FindFirstChild(
+            "Sellall"
+        )
+
+
+    if not Sellall then
+        return nil
+    end
+
+
+    local Equip =
+        Sellall:FindFirstChild(
+            "Equip"
+        )
+
+
+    local Owned =
+
+        Equip
+
+        and Equip:IsA(
+            "GuiObject"
+        )
+
+        and Equip.Visible == true
+
+
+    local Sell =
+        Sellall:FindFirstChild(
+            "Sell"
+        )
+
+
+    local PriceBian =
+        Sell
+        and Sell:FindFirstChild(
+            "Bian"
+        )
+
+
+    local PriceLabel =
+        PriceBian
+        and PriceBian:FindFirstChild(
+            "TextLabel"
+        )
+
+
+    local PriceText =
+        PriceLabel
+        and PriceLabel.Text
+
+
+    return {
+
+        id = ID,
+
+        owned = Owned,
+
+        price =
+            PriceText
+            and ParsePrice(
+                PriceText
+            ),
+
+        card = Card
+    }
+end
+
+
+local function FindNextPump()
+
+    local List = {}
+
+
+    for _, Card in ipairs(
+        PumpScrollingFrame:GetChildren()
+    ) do
+
+        local Info =
+            GetPumpInfo(
+                Card
+            )
+
+
+        if Info then
+
+            table.insert(
+                List,
+                Info
+            )
+
+        end
+
+    end
+
+
+    table.sort(
+        List,
+
+        function(A, B)
+
+            return A.id < B.id
+
+        end
+    )
+
+
+    for _, Info in ipairs(
+        List
+    ) do
+
+        if
+            not Info.owned
+            and Info.price
+        then
+
+            return Info
+
+        end
+
+    end
+
+
+    return nil
+end
+
+
+local CurrentPumpTarget =
+    nil
+
+
+local PumpBuying =
+    false
+
+
+local function RefreshPumpTarget()
+
+    CurrentPumpTarget =
+        FindNextPump()
+end
+
+
+local function BuyTargetPump()
+
+    if
+        not HubRunning
+        or not Settings.AutoBuyBestPump
+        or PumpBuying
+    then
+
+        return
+    end
+
+
+    if not CurrentPumpTarget then
+
+        RefreshPumpTarget()
+
+    end
+
+
+    local Pump =
+        CurrentPumpTarget
+
+
+    if not Pump then
+        return
+    end
+
+
+    local Updated =
+        GetPumpInfo(
+            Pump.card
+        )
+
+
+    if
+        Updated
+        and Updated.owned
+    then
+
+        RefreshPumpTarget()
+
+        Pump =
+            CurrentPumpTarget
+
+    end
+
+
+    if not Pump then
+        return
+    end
+
+
+    local Cash =
+        tonumber(
+            CashValue.Value
+        ) or 0
+
+
+    if Cash < Pump.price then
+        return
+    end
+
+
+    PumpBuying =
+        true
+
+
+    local CashBefore =
+        Cash
+
+
+    pcall(function()
+
+        PumpBuyEvent:FireServer(
+            Pump.id
+        )
+
+    end)
+
+
+    task.spawn(function()
+
+        local Started =
+            os.clock()
+
+
+        while
+            HubRunning
+            and os.clock() - Started < 3
+        do
+
+            task.wait(0.1)
+
+
+            local Info =
+                GetPumpInfo(
+                    Pump.card
+                )
+
+
+            local NewCash =
+                tonumber(
+                    CashValue.Value
+                ) or 0
+
+
+            if
+                (
+                    Info
+                    and Info.owned
+                )
+                or NewCash < CashBefore
+            then
+
+                PumpBuying =
+                    false
+
+
+                RefreshPumpTarget()
+
+                BuyTargetPump()
+
+                return
+
+            end
+
+        end
+
+
+        PumpBuying =
+            false
+
+    end)
+end
+
+
+local function CheckPumpCash()
+
+    if
+        not HubRunning
+        or not Settings.AutoBuyBestPump
+    then
+
+        return
+    end
+
+
+    if not CurrentPumpTarget then
+
+        RefreshPumpTarget()
+
+    end
+
+
+    if
+        CurrentPumpTarget
+        and tonumber(
+            CashValue.Value
+        ) >= CurrentPumpTarget.price
+    then
+
+        BuyTargetPump()
+
+    end
+end
+
+
+--// ============================================================
+--// UPGRADES
+--// ============================================================
+
+local UpgradeConfigs = {
+
+    {
+        slot = "1",
+        key = "Backpack"
+    },
+
+    {
+        slot = "2",
+        key = "Speed"
+    },
+
+    {
+        slot = "3",
+        key = "FishDisplay"
+    }
+}
+
+
+local function GetUpgradeInfo(
+    Config
+)
+
+    local Section =
+        UpgradeScrollingFrame:FindFirstChild(
+            Config.slot
+        )
+
+
+    if not Section then
+        return nil
+    end
+
+
+    local Card =
+        Section:FindFirstChild(
+            "1"
+        )
+
+
+    if not Card then
+        return nil
+    end
+
+
+    local Sell =
+        Card:FindFirstChild(
+            "Sell"
+        )
+
+
+    local Bian =
+        Sell
+        and Sell:FindFirstChild(
+            "Bian"
+        )
+
+
+    local PriceLabel =
+        Bian
+        and Bian:FindFirstChild(
+            "TextLabel"
+        )
+
+
+    if not PriceLabel then
+        return nil
+    end
+
+
+    return {
+
+        key = Config.key,
+
+        price =
+            ParsePrice(
+                PriceLabel.Text
+            ),
+
+        priceText =
+            PriceLabel.Text,
+
+        priceLabel =
+            PriceLabel
+    }
+end
+
+
+local function FindAffordableUpgrade()
+
+    local Cash =
+        tonumber(
+            CashValue.Value
+        ) or 0
+
+
+    local Best =
+        nil
+
+
+    for _, Config in ipairs(
+        UpgradeConfigs
+    ) do
+
+        local Info =
+            GetUpgradeInfo(
+                Config
+            )
+
+
+        if
+            Info
+            and Info.price
+            and Cash >= Info.price
+        then
+
+            if
+                not Best
+                or Info.price < Best.price
+            then
+
+                Best =
+                    Info
+
+            end
+
+        end
+
+    end
+
+
+    return Best
+end
+
+
+local UpgradeBuying =
+    false
+
+
+local function BuyAffordableUpgrade()
+
+    if
+        not HubRunning
+        or not Settings.AutoBuyUpgrades
+        or UpgradeBuying
+    then
+
+        return
+    end
+
+
+    local Upgrade =
+        FindAffordableUpgrade()
+
+
+    if not Upgrade then
+        return
+    end
+
+
+    UpgradeBuying =
+        true
+
+
+    local CashBefore =
+        tonumber(
+            CashValue.Value
+        ) or 0
+
+
+    local OldPrice =
+        Upgrade.priceText
+
+
+    pcall(function()
+
+        UpgradeBuyEvent:FireServer(
+            Upgrade.key
+        )
+
+    end)
+
+
+    task.spawn(function()
+
+        local Started =
+            os.clock()
+
+
+        while
+            HubRunning
+            and os.clock() - Started < 3
+        do
+
+            task.wait(0.1)
+
+
+            local NewCash =
+                tonumber(
+                    CashValue.Value
+                ) or 0
+
+
+            local NewPrice =
+                Upgrade.priceLabel
+                and Upgrade.priceLabel.Parent
+                and Upgrade.priceLabel.Text
+                or nil
+
+
+            if
+                NewCash < CashBefore
+                or NewPrice ~= OldPrice
+            then
+
+                UpgradeBuying =
+                    false
+
+
+                task.wait(0.15)
+
+                BuyAffordableUpgrade()
+
+                return
+
+            end
+
+        end
+
+
+        UpgradeBuying =
+            false
+
+    end)
+end
+
+
+local function CheckUpgradeCash()
+
+    if Settings.AutoBuyUpgrades then
+
+        BuyAffordableUpgrade()
+
+    end
+end
+
+
+--// ============================================================
+--// REBIRTH
+--// ============================================================
+
+local RebirthBusy =
+    false
+
+
+local LastRebirthText =
+    nil
+
+
+local function GetRebirthProgress()
+
+    local Current, Required =
+        tostring(
+            RebirthProgressLabel.Text
+        ):match(
+            "(%d+)%s*/%s*(%d+)"
+        )
+
+
+    return
+
+        tonumber(Current),
+
+        tonumber(Required)
+end
+
+
+local function TryAutoRebirth()
+
+    if
+        not HubRunning
+        or not Settings.AutoRebirth
+        or RebirthBusy
+    then
+
+        return
+    end
+
+
+    local Current, Required =
+        GetRebirthProgress()
+
+
+    if
+        not Current
+        or not Required
+    then
+
+        return
+    end
+
+
+    if Current < Required then
+
+        LastRebirthText =
+            nil
+
+
+        return
+    end
+
+
+    local Text =
+        tostring(
+            RebirthProgressLabel.Text
+        )
+
+
+    if Text == LastRebirthText then
+        return
+    end
+
+
+    LastRebirthText =
+        Text
+
+
+    RebirthBusy =
+        true
+
+
+    pcall(function()
+
+        RebirthEvent:FireServer()
+
+    end)
+
+
+    task.spawn(function()
+
+        local Old =
+            Text
+
+
+        local Started =
+            os.clock()
+
+
+        while
+            HubRunning
+            and Settings.AutoRebirth
+            and os.clock() - Started < 5
+        do
+
+            task.wait(0.1)
+
+
+            if tostring(
+                RebirthProgressLabel.Text
+            ) ~= Old
+            then
+
+                RebirthBusy =
+                    false
+
+
+                LastRebirthText =
+                    nil
+
+
+                task.wait(0.25)
+
+                TryAutoRebirth()
+
+                return
+
+            end
+
+        end
+
+
+        RebirthBusy =
+            false
+
+    end)
+end
+
+
+--// ============================================================
+--// FISH FARM MAP
+--// ============================================================
+
+local function GetFarmScene()
+
+    local MainScene =
+        Workspace:FindFirstChild(
+            MAIN_SCENE_NAME
+        )
+
+
+    return
+
+        MainScene
+
+        and MainScene:FindFirstChild(
+            FARM_SCENE_NAME
+        )
+end
+
+
+local function GetWorldFish()
+
+    local Scene =
+        GetFarmScene()
+
+
+    return
+
+        Scene
+
+        and Scene:FindFirstChild(
+            "WorldFish"
+        )
+end
+
+
+--// ============================================================
+--// STAGES
+--// ============================================================
+
+local function GetStages()
+
+    local Scene =
+        GetFarmScene()
+
+
+    local Stages = {}
+
+
+    if not Scene then
+        return Stages
+    end
+
+
+    for _, Child in ipairs(
+        Scene:GetChildren()
+    ) do
+
+        local Number =
+            tonumber(
+                Child.Name:match(
+
+                    "^"
+                    .. STAGE_PREFIX
+                    .. "(%d+)$"
+                )
+            )
+
+
+        if Number then
+
+            table.insert(
+                Stages,
+                {
+
+                    number = Number,
+
+                    folder = Child
+                }
+            )
+
+        end
+
+    end
+
+
+    table.sort(
+        Stages,
+
+        function(A, B)
+
+            return A.number < B.number
+
+        end
+    )
+
+
+    return Stages
+end
+
+
+local function GetStageWater(
+    StageFolder
+)
+
+    local Water =
+        StageFolder
+        and StageFolder:FindFirstChild(
+            WATER_NAME
+        )
+
+
+    if
+        Water
+        and Water:IsA(
+            "BasePart"
+        )
+    then
+
+        return Water
+
+    end
+
+
+    return nil
+end
+
+
+local function IsWaterDrained(
+    Water
+)
+
+    if not Water then
+        return true
+    end
+
+
+    return
+
+        Water.CanTouch == false
+
+        and Water.CanQuery == false
+
+        and Water.CanCollide == false
+end
+
+
+--// ============================================================
+--// FISH INFO
+--// ============================================================
+
+local function GetFishInfo(
+    Fish
+)
+
+    local StageNumber =
+        tonumber(
+            Fish.Name:match(
+                "^Fish_(%d+)_"
+            )
+        )
+
+
+    if not StageNumber then
+        return nil
+    end
+
+
+    local FishRoot =
+        Fish:FindFirstChild(
+            "FishRoot"
+        )
+
+
+    if
+        not FishRoot
+        or not FishRoot:IsA(
+            "BasePart"
+        )
+    then
+
+        return nil
+    end
+
+
+    local Prompt =
+        FishRoot:FindFirstChild(
+            "PickupPrompt"
+        )
+
+
+    if
+        not Prompt
+        or not Prompt:IsA(
+            "ProximityPrompt"
+        )
+    then
+
+        return nil
+    end
+
+
+    return {
+
+        model = Fish,
+
+        root = FishRoot,
+
+        prompt = Prompt,
+
+        stage = StageNumber,
+
+        rarity =
+            tostring(
+                Fish:GetAttribute(
+                    "Rarity"
+                ) or "Unknown"
+            ),
+
+        price =
+            tonumber(
+                Fish:GetAttribute(
+                    "Price"
+                )
+            ) or 0
+    }
+end
+
+
+--// ============================================================
+--// FIND FARM FISH
+--// ============================================================
+
+local function FindBestFishInStage(
+    StageNumber
+)
+
+    local Folder =
+        GetWorldFish()
+
+
+    if not Folder then
+        return nil
+    end
+
+
+    local Candidates = {}
+
+
+    for _, Fish in ipairs(
+        Folder:GetChildren()
+    ) do
+
+        local Info =
+            GetFishInfo(
+                Fish
+            )
+
+
+        if
+            Info
+            and Info.stage == StageNumber
+            and Info.prompt.Enabled
+        then
+
+            local Accept =
+                false
+
+
+            if
+                Settings.FishFarmMode
+                == "Highest Price"
+            then
+
+                Accept =
+                    true
+
+
+            elseif
+                Settings.FishFarmMode
+                == "Rarity"
+            then
+
+                Accept =
+
+                    Settings.FishRarity
+                    == "Any"
+
+                    or Info.rarity
+                    == Settings.FishRarity
+
+            end
+
+
+            if Accept then
+
+                table.insert(
+                    Candidates,
+                    Info
+                )
+
+            end
+
+        end
+
+    end
+
+
+    table.sort(
+        Candidates,
+
+        function(A, B)
+
+            return A.price > B.price
+
+        end
+    )
+
+
+    return Candidates[1]
+end
+
+
+local function PickupFarmFish(
+    StageNumber
+)
+
+    if
+        IsBackpackFull()
+        or not Settings.AutoFarmFish
+    then
+
+        return false
+    end
+
+
+    local Fish =
+        FindBestFishInStage(
+            StageNumber
+        )
+
+
+    if not Fish then
+        return false
+    end
+
+
+    TeleportToCFrame(
+
+        Fish.root.CFrame
+        * CFrame.new(
+            0,
+            2,
+            0
+        )
+    )
+
+
+    task.wait(0.07)
+
+
+    if typeof(
+        fireproximityprompt
+    ) ~= "function"
+    then
+
+        return false
+    end
+
+
+    local Success =
+        pcall(function()
+
+            fireproximityprompt(
+                Fish.prompt
+            )
+
+        end)
+
+
+    task.wait(
+        Settings.FishPickupDelay
+    )
+
+
+    return Success
+end
+
+
+local function FarmStageUntilFull(
+    StageNumber
+)
+
+    while
+        HubRunning
+        and Settings.AutoFarmFish
+        and not IsBackpackFull()
+    do
+
+        if not PickupFarmFish(
+            StageNumber
+        )
+        then
+
+            task.wait(0.2)
+
+        end
+
+    end
+
+
+    return
+        IsBackpackFull()
+end
+
+
+local function WaitForBackpackReset()
+
+    FarmWaitingForBackpack =
+        true
+
+    if Settings.AutoHome then
+
+        CheckBackpack()
+
+    end
+
+
+    local LastRetry =
+        0
+
+
+    while
+        HubRunning
+        and Settings.AutoFarmFish
+    do
+
+        local Amount, Capacity =
+            GetBackpackNumbers()
+
+
+        if
+            Capacity > 0
+            and Amount < Capacity
+            and not BackpackSequenceBusy
+        then
+
+            BackpackFullHandled =
+                false
+
+            -- Give the server/character a moment to settle before the
+            -- farm begins teleporting through stages again.
+            task.wait(
+                Settings.FarmResumeDelay
+            )
+
+            FarmWaitingForBackpack =
+                false
+
+            return true
+
+        end
+
+
+        -- If Auto Sell is enabled but a previous sell didn't actually
+        -- clear the backpack, re-arm the home sequence and try again.
+        if
+            Settings.AutoHome
+            and Settings.AutoSellFish
+            and IsBackpackFull()
+            and not BackpackSequenceBusy
+            and os.clock() - LastRetry >= 1
+        then
+
+            BackpackFullHandled =
+                false
+
+            CheckBackpack()
+
+            LastRetry =
+                os.clock()
+
+        elseif Settings.AutoHome then
+
+            CheckBackpack()
+
+        end
+
+
+        task.wait(0.15)
+
+    end
+
+
+    FarmWaitingForBackpack =
+        false
+
+    return false
+end
+
+
+local function DrainStageTimed(
+    Stage,
+    HasCompletedStage
+)
+
+    local Water =
+        GetStageWater(
+            Stage.folder
+        )
+
+
+    if not Water then
+        return "skip"
+    end
+
+
+    if IsWaterDrained(
+        Water
+    ) then
+
+        return "done"
+    end
+
+
+    local Started =
+        os.clock()
+
+
+    local LastTeleport =
+        0
+
+
+    while
+        HubRunning
+        and Settings.AutoFarmFish
+        and Water.Parent
+        and not IsWaterDrained(
+            Water
+        )
+    do
+
+        if
+            HasCompletedStage
+            and os.clock() - Started
+                >= Settings.StageDrainTimeout
+        then
+
+            return "timeout"
+
+        end
+
+
+        if
+            os.clock()
+            - LastTeleport
+            >= 0.25
+        then
+
+            TeleportToCFrame(
+
+                Water.CFrame
+                * CFrame.new(
+                    0,
+
+                    Water.Size.Y
+                    * 0.5
+                    + 2.5,
+
+                    0
+                )
+            )
+
+
+            LastTeleport =
+                os.clock()
+
+        end
+
+
+        if not Settings.AutoWater then
+
+            WaterOnce()
+
+        end
+
+
+        RunService.Heartbeat:Wait()
+
+    end
+
+
+    if IsWaterDrained(
+        Water
+    ) then
+
+        return "done"
+
+    end
+
+
+    return "stopped"
+end
+
+
+--// ============================================================
+--// FARM LOOP
+--// ============================================================
+
+local FishFarmLoopID =
+    0
+
+
+local LastCompletedStage =
+    nil
+
+
+local function DoFarmResetCycle()
+
+    if not LastCompletedStage then
+        return false
+    end
+
+
+    if not FarmStageUntilFull(
+        LastCompletedStage
+    )
+    then
+
+        return false
+    end
+
+
+    if not WaitForBackpackReset() then
+
+        return false
+    end
+
+
+    LastCompletedStage =
+        nil
+
+
+    return true
+end
+
+
+local function StartFishFarm()
+
+    FishFarmLoopID += 1
+
+
+    local ID =
+        FishFarmLoopID
+
+
+    LastCompletedStage =
+        nil
+
+
+    task.spawn(function()
+
+        local StageIndex =
+            1
+
+
+        while
+            HubRunning
+            and Settings.AutoFarmFish
+            and ID == FishFarmLoopID
+        do
+
+            local Stages =
+                GetStages()
+
+
+            if #Stages == 0 then
+
+                task.wait(1)
+
+                continue
+            end
+
+
+            if StageIndex > #Stages then
+
+                if
+                    LastCompletedStage
+                    and DoFarmResetCycle()
+                then
+
+                    StageIndex =
+                        1
+
+                end
+
+
+                task.wait(0.1)
+
+                continue
+            end
+
+
+            local Stage =
+                Stages[
+                    StageIndex
+                ]
+
+
+            local Result =
+                DrainStageTimed(
+
+                    Stage,
+
+                    LastCompletedStage
+                    ~= nil
+                )
+
+
+            if Result == "done" then
+
+                LastCompletedStage =
+                    Stage.number
+
+
+                StageIndex += 1
+
+
+            elseif Result == "timeout" then
+
+                if DoFarmResetCycle() then
+
+                    StageIndex =
+                        1
+
+                end
+
+
+            elseif Result == "skip" then
+
+                StageIndex += 1
+
+
+            else
+
+                task.wait(0.25)
+
+            end
+
+
+            task.wait(0.05)
+
+        end
+
+    end)
+end
+
+
+local function StopFishFarm()
+
+    Settings.AutoFarmFish =
+        false
+
+
+    FishFarmLoopID += 1
+end
+
+
+--// ============================================================
+--// AUTO EGG
+--// ============================================================
+
+local AutoOpenEggLoopID =
+    0
+
+
+local EggOpening =
+    false
+
+
+-- Captured pet IDs selected for auto delete.
+
+local CapturedEggDeletePets = {
+
+    ["13"] = true,
+
+    ["14"] = true,
+
+    ["15"] = true
+}
+
+
+local function GetEggDeleteTable()
+
+    if not Settings.EggAutoDelete then
+
+        return {}
+
+    end
+
+
+    local Result = {}
+
+
+    for PetID, Enabled in pairs(
+        CapturedEggDeletePets
+    ) do
+
+        if Enabled then
+
+            Result[
+                PetID
+            ] = true
+
+        end
+
+    end
+
+
+    return Result
+end
+
+
+local function GetAvailableEggIDs()
+
+    local IDs = {}
+
+
+    for _, Object in ipairs(
+        EggZoneFolder:GetChildren()
+    ) do
+
+        local ID =
+            tonumber(
+                Object.Name:match(
+                    "^Egg(%d+)$"
+                )
+            )
+
+
+        if ID then
+
+            table.insert(
+                IDs,
+                ID
+            )
+
+        end
+
+    end
+
+
+    table.sort(
+        IDs
+    )
+
+
+    return IDs
+end
+
+
+local function GetEggDropdownOptions()
+
+    local Options = {}
+
+
+    for _, ID in ipairs(
+        GetAvailableEggIDs()
+    ) do
+
+        table.insert(
+            Options,
+            "Egg " .. ID
+        )
+
+    end
+
+
+    if #Options == 0 then
+
+        table.insert(
+            Options,
+            "Egg 4"
+        )
+
+    end
+
+
+    return Options
+end
+
+
+local function OpenEggOnce()
+
+    if
+        not HubRunning
+        or not Settings.AutoOpenEgg
+        or EggOpening
+    then
+
+        return false
+    end
+
+
+    EggOpening =
+        true
+
+
+    local Success, Result =
+        pcall(function()
+
+            return OpenEggFunction:InvokeServer(
+
+                Settings.EggId,
+
+                Settings.EggOpenAmount,
+
+                false,
+
+                GetEggDeleteTable()
+            )
+
+        end)
+
+
+    EggOpening =
+        false
+
+
+    if not Success then
+
+        warn(
+            "[Auto Egg]",
+            Result
+        )
+
+
+        return false
+    end
+
+
+    return true
+end
+
+
+local function StartAutoOpenEgg()
+
+    AutoOpenEggLoopID += 1
+
+
+    local ID =
+        AutoOpenEggLoopID
+
+
+    task.spawn(function()
+
+        while
+            HubRunning
+            and Settings.AutoOpenEgg
+            and ID == AutoOpenEggLoopID
+        do
+
+            OpenEggOnce()
+
+
+            task.wait(
+                Settings.EggOpenDelay
+            )
+
+        end
+
+    end)
+end
+
+
+local function StopAutoOpenEgg()
+
+    Settings.AutoOpenEgg =
+        false
+
+
+    AutoOpenEggLoopID += 1
+
+
+    EggOpening =
+        false
+end
+
+
+--// ============================================================
+--// CONNECTIONS
+--// ============================================================
+
+TrackConnection(
+
+    AmountValue:GetPropertyChangedSignal(
+        "Value"
+    ):Connect(
+        CheckBackpack
+    )
+
+)
+
+
+TrackConnection(
+
+    CapacityValue:GetPropertyChangedSignal(
+        "Value"
+    ):Connect(
+        CheckBackpack
+    )
+
+)
+
+
+TrackConnection(
+
+    CashValue:GetPropertyChangedSignal(
+        "Value"
+    ):Connect(function()
+
+        CheckAuraCash()
+
+        CheckPumpCash()
+
+        CheckUpgradeCash()
+
+    end)
+
+)
+
+
+TrackConnection(
+
+    RebirthProgressLabel:GetPropertyChangedSignal(
+        "Text"
+    ):Connect(
+        TryAutoRebirth
+    )
+
+)
+
+
+--// ============================================================
+--// UNLOAD
+--// ============================================================
+
+local function UnloadHub()
+
+    if not HubRunning then
+        return
+    end
+
+
+    HubRunning =
+        false
+
+
+    Settings.AutoWater =
+        false
+
+    Settings.AutoFarmFish =
+        false
+
+    Settings.AutoHome =
+        false
+
+    Settings.AutoSellFish =
+        false
+
+    Settings.AutoOpenEgg =
+        false
+
+    Settings.AutoCollectCash =
+        false
+
+    Settings.AutoBuyBestAura =
+        false
+
+    Settings.AutoBuyBestPump =
+        false
+
+    Settings.AutoBuyUpgrades =
+        false
+
+    Settings.AutoRebirth =
+        false
+
+
+    StopAutoWater()
+
+    FarmWaitingForBackpack =
+        false
+
+    StopFishFarm()
+
+    StopAutoOpenEgg()
+
+    StopBackpackWatcher()
+
+
+    AutoCollectLoopID += 1
+
+
+    for _, Connection in ipairs(
+        Connections
+    ) do
+
+        pcall(function()
+
+            Connection:Disconnect()
+
+        end)
+
+    end
+
+
+    table.clear(
+        Connections
+    )
+
+
+    pcall(function()
+
+        Window:Unload()
+
+    end)
+end
+
+
+--// ============================================================
+--// POLISHED GEN2 UI
+--// ============================================================
+
+-- Allow the next execution to cleanly unload this one first.
+getgenv().__FISHING_HUB_UNLOAD = UnloadHub
+
+local SessionStarted = os.clock()
+
+--============================================================
+-- Diagnostics console / logging
+--============================================================
+
+local DebugConsole = DiagnosticsTab:CreateConsole({
+    name = "Fishing Hub Console",
+    text = "Fishing Hub initialized.",
+    height = 180,
+    follow = true,
+    maxLines = 200
+})
+
+local function Log(Message)
+    if DebugConsole then
+        DebugConsole:Append(
+            string.format("[%06.1f] %s", os.clock() - SessionStarted, tostring(Message))
+        )
+    end
+end
+
+local function Toast(Title, Subtitle)
+    Window:Toast({
+        title = Title,
+        subtitle = Subtitle,
+        duration = 3
+    })
+end
+
+--============================================================
+-- Dashboard
+--============================================================
+
+DashboardTab:CreateDivider({ text = "Live Session" })
+
+local StatsRowA = DashboardTab:CreateGroup()
+local BackpackAmountStat = StatsRowA:CreateStat({
+    name = "Backpack",
+    value = 0,
+    compact = true,
+    changeMode = "absolute"
+})
+local BackpackCapacityStat = StatsRowA:CreateStat({
+    name = "Capacity",
+    value = 0,
+    compact = true,
+    changeMode = "absolute"
+})
+local CashStat = StatsRowA:CreateStat({
+    name = "Cash",
+    value = 0,
+    prefix = "$",
+    compact = true,
+    changeMode = "absolute"
+})
+
+local StatsRowB = DashboardTab:CreateGroup()
+local ActiveStat = StatsRowB:CreateStat({
+    name = "Active",
+    value = 0,
+    compact = true,
+    changeMode = "absolute"
+})
+local StageStat = StatsRowB:CreateStat({
+    name = "Stages",
+    value = 0,
+    compact = true,
+    changeMode = "absolute"
+})
+local RuntimeStat = StatsRowB:CreateStat({
+    name = "Runtime",
+    value = 0,
+    suffix = "s",
+    compact = true,
+    changeMode = "absolute"
+})
+
+local SessionSummary = DashboardTab:CreateText({
+    name = "Automation Status",
+    text = "No automation is currently active."
+})
+
+local AutomationFlags = {
+    "AutoWater",
+    "AutoFarmFish",
+    "AutoHomeWhenFull",
+    "AutoSellFish",
+    "AutoOpenEgg",
+    "AutoCollectCash",
+    "AutoBuyBestAura",
+    "AutoBuyBestPump",
+    "AutoBuyUpgrades",
+    "AutoRebirth"
+}
+
+local function CountActiveAutomation()
+    local Count = 0
+
+    if Settings.AutoWater then Count += 1 end
+    if Settings.AutoFarmFish then Count += 1 end
+    if Settings.AutoHome then Count += 1 end
+    if Settings.AutoSellFish then Count += 1 end
+    if Settings.AutoOpenEgg then Count += 1 end
+    if Settings.AutoCollectCash then Count += 1 end
+    if Settings.AutoBuyBestAura then Count += 1 end
+    if Settings.AutoBuyBestPump then Count += 1 end
+    if Settings.AutoBuyUpgrades then Count += 1 end
+    if Settings.AutoRebirth then Count += 1 end
+
+    return Count
+end
+
+local function StopAllAutomation()
+    for _, Flag in ipairs(AutomationFlags) do
+        pcall(function()
+            Window:Set(Flag, false)
+        end)
+    end
+
+    Log("All automation stopped.")
+    Toast("Automation stopped", "Every active toggle was disabled.")
+end
+
+local QuickActions = DashboardTab:CreateGroup()
+
+QuickActions:CreateButton({
+    name = "Stop Everything",
+    description = "Immediately disables every automation toggle.",
+    callback = StopAllAutomation
+})
+
+QuickActions:CreateButton({
+    name = "Save Config",
+    callback = function()
+        if Window:Save() then
+            Log("Configuration saved.")
+            Toast("Saved", "Configuration written successfully.")
+        end
+    end
+})
+
+QuickActions:CreateButton({
+    name = "Hide UI",
+    callback = function()
+        Window:Hide()
+    end
+})
+
+--============================================================
+-- Farm tab
+--============================================================
+
+local FarmGrid = FarmTab:CreateGroup()
+local FarmLeft = FarmGrid:CreateGroup({ direction = "column" })
+local FarmRight = FarmGrid:CreateGroup({ direction = "column" })
+
+FarmLeft:CreateSection({ name = "Automation" })
+
+FarmLeft:CreateToggle({
+    name = "Auto Water",
+    flag = "AutoWater",
+    value = false,
+    callback = function(Value)
+        Settings.AutoWater = Value
+
+        if Value then
+            StartAutoWater()
+            Log("Auto Water enabled.")
+        else
+            StopAutoWater()
+            Log("Auto Water disabled.")
+        end
+    end
+})
+
+FarmLeft:CreateToggle({
+    name = "Auto Farm Fish",
+    flag = "AutoFarmFish",
+    value = false,
+    callback = function(Value)
+        Settings.AutoFarmFish = Value
+
+        if Value then
+            StartFishFarm()
+            Log("Auto Farm Fish enabled.")
+        else
+            StopFishFarm()
+            Log("Auto Farm Fish disabled.")
+        end
+    end
+})
+
+FarmLeft:CreateDropdown({
+    name = "Fish Farm Mode",
+    options = { "Highest Price", "Rarity" },
+    value = "Highest Price",
+    flag = "FishFarmMode",
+    callback = function(Value)
+        Settings.FishFarmMode = Value
+        Log("Farm mode: " .. tostring(Value))
+    end
+})
+
+local FarmRarityOptions = { "Any" }
+for _, Rarity in ipairs(FishRarities) do
+    table.insert(FarmRarityOptions, Rarity)
+end
+
+FarmLeft:CreateDropdown({
+    name = "Fish Rarity",
+    description = "Used when Fish Farm Mode is set to Rarity.",
+    options = FarmRarityOptions,
+    value = "Any",
+    flag = "FishRarity",
+    callback = function(Value)
+        Settings.FishRarity = Value
+    end
+})
+
+FarmRight:CreateSection({ name = "Timing" })
+
+FarmRight:CreateSlider({
+    name = "Water Interval",
+    range = { 0.05, 0.50 },
+    increment = 0.05,
+    value = 0.10,
+    suffix = "s",
+    flag = "WaterInterval",
+    callback = function(Value)
+        Settings.WaterInterval = Value
+    end
+})
+
+FarmRight:CreateSlider({
+    name = "Stage Drain Timeout",
+    description = "If a new stage takes longer than this, the farm returns to the last completed stage.",
+    range = { 2, 60 },
+    increment = 1,
+    value = 10,
+    suffix = "s",
+    flag = "StageDrainTimeout",
+    callback = function(Value)
+        Settings.StageDrainTimeout = Value
+    end
+})
+
+FarmRight:CreateSlider({
+    name = "Fish Pickup Delay",
+    description = "Delay after each successful fish pickup.",
+    range = { 0.05, 1 },
+    increment = 0.05,
+    value = 0.15,
+    suffix = "s",
+    flag = "FishPickupDelay",
+    callback = function(Value)
+        Settings.FishPickupDelay = Value
+    end
+})
+
+--============================================================
+-- Inventory tab
+--============================================================
+
+local InventoryGrid = InventoryTab:CreateGroup()
+local InventoryLeft = InventoryGrid:CreateGroup({ direction = "column" })
+local InventoryRight = InventoryGrid:CreateGroup({ direction = "column" })
+
+InventoryLeft:CreateSection({ name = "Automation" })
+
+InventoryLeft:CreateToggle({
+    name = "Auto Home When Full",
+    flag = "AutoHomeWhenFull",
+    value = false,
+    callback = function(Value)
+        Settings.AutoHome = Value
+        BackpackFullHandled = false
+        BackpackSequenceBusy = false
+
+        if Value then
+            StartBackpackWatcher()
+            CheckBackpack()
+            Log("Auto Home enabled.")
+        else
+            StopBackpackWatcher()
+            Log("Auto Home disabled.")
+        end
+    end
+})
+
+InventoryLeft:CreateToggle({
+    name = "Auto Sell All Fish",
+    flag = "AutoSellFish",
+    value = false,
+    callback = function(Value)
+        Settings.AutoSellFish = Value
+        Log("Auto Sell: " .. tostring(Value))
+    end
+})
+
+InventoryLeft:CreateDropdown({
+    name = "Sell Lock Rarity",
+    description = "Keeps the selected rarity and higher rarities during Sell All.",
+    options = SellLockRarities,
+    value = "OFF",
+    flag = "SellLockRarity",
+    callback = function(Value)
+        Settings.SellLockRarity = Value
+        ApplySellLockRarity()
+        Log("Sell lock: " .. tostring(Value))
+    end
+})
+
+InventoryRight:CreateSection({ name = "Manual Actions" })
+
+InventoryRight:CreateButton({
+    name = "Teleport Home",
+    callback = function()
+        local Success = TeleportHome()
+        Log("Teleport Home: " .. tostring(Success))
+        Toast("Teleport Home", Success and "Moved to home target." or "Home target was unavailable.")
+    end
+})
+
+InventoryRight:CreateButton({
+    name = "Equip Best Fish",
+    callback = function()
+        local Success = EquipBestFish()
+        Log("Equip Best Fish: " .. tostring(Success))
+        Toast("Best Fish", Success and "Equip request completed." or "Equip request failed.")
+    end
+})
+
+InventoryRight:CreateButton({
+    name = "Sell All Now",
+    callback = function()
+        task.spawn(function()
+            local Success = SellAllFish()
+            Log("Manual Sell All: " .. tostring(Success))
+            Toast("Sell All", Success and "Sell request completed." or "Sell request failed.")
+        end)
+    end
+})
+
+InventoryRight:CreateSlider({
+    name = "Teleport Delay",
+    range = { 0.10, 2 },
+    increment = 0.05,
+    value = 0.35,
+    suffix = "s",
+    flag = "TeleportDelay",
+    callback = function(Value)
+        Settings.TeleportDelay = Value
+    end
+})
+
+InventoryRight:CreateSlider({
+    name = "Best Fish Delay",
+    range = { 0.10, 2 },
+    increment = 0.05,
+    value = 0.35,
+    suffix = "s",
+    flag = "BestFishDelay",
+    callback = function(Value)
+        Settings.BestFishDelay = Value
+    end
+})
+
+--============================================================
+-- Eggs tab
+--============================================================
+
+local EggDropdownOptions = GetEggDropdownOptions()
+local DefaultEgg = "Egg 4"
+local FoundEgg4 = false
+
+for _, Option in ipairs(EggDropdownOptions) do
+    if Option == "Egg 4" then
+        FoundEgg4 = true
+        break
+    end
+end
+
+if not FoundEgg4 then
+    DefaultEgg = EggDropdownOptions[1]
+end
+
+Settings.EggId = tonumber(DefaultEgg:match("%d+")) or 4
+
+local EggGrid = EggsTab:CreateGroup()
+local EggLeft = EggGrid:CreateGroup({ direction = "column" })
+local EggRight = EggGrid:CreateGroup({ direction = "column" })
+
+local EggDropdown = EggLeft:CreateDropdown({
+    name = "Egg",
+    description = "Choose which egg Auto Open uses.",
+    options = EggDropdownOptions,
+    value = DefaultEgg,
+    flag = "SelectedEgg",
+    callback = function(Value)
+        local ID = tonumber(tostring(Value):match("%d+"))
+        if ID then
+            Settings.EggId = ID
+            Log("Selected Egg " .. ID)
+        end
+    end
+})
+
+EggLeft:CreateToggle({
+    name = "Egg Auto Delete",
+    flag = "EggAutoDelete",
+    value = true,
+    callback = function(Value)
+        Settings.EggAutoDelete = Value
+    end
+})
+
+EggLeft:CreateToggle({
+    name = "Auto Open Egg",
+    flag = "AutoOpenEgg",
+    value = false,
+    callback = function(Value)
+        Settings.AutoOpenEgg = Value
+
+        if Value then
+            StartAutoOpenEgg()
+            Log("Auto Open Egg enabled.")
+        else
+            StopAutoOpenEgg()
+            Log("Auto Open Egg disabled.")
+        end
+    end
+})
+
+EggRight:CreateDropdown({
+    name = "Open Amount",
+    description = "Amount requested per egg-open call.",
+    options = { "1", "3" },
+    value = "3",
+    flag = "EggOpenAmount",
+    callback = function(Value)
+        Settings.EggOpenAmount = tonumber(Value) or 3
+    end
+})
+
+EggRight:CreateSlider({
+    name = "Egg Open Delay",
+    description = "Delay between open requests.",
+    range = { 0.05, 2 },
+    increment = 0.05,
+    value = 0.15,
+    suffix = "s",
+    flag = "EggOpenDelay",
+    callback = function(Value)
+        Settings.EggOpenDelay = Value
+    end
+})
+
+local function RefreshEggDropdown()
+    if not EggDropdown then
+        return
+    end
+
+    pcall(function()
+        EggDropdown:Refresh(GetEggDropdownOptions())
+    end)
+end
+
+TrackConnection(EggZoneFolder.ChildAdded:Connect(function()
+    task.wait(0.1)
+    RefreshEggDropdown()
+end))
+
+TrackConnection(EggZoneFolder.ChildRemoved:Connect(function()
+    task.wait(0.1)
+    RefreshEggDropdown()
+end))
+
+--============================================================
+-- Purchases tab
+--============================================================
+
+local PurchaseGrid = PurchasesTab:CreateGroup()
+local PurchaseLeft = PurchaseGrid:CreateGroup({ direction = "column" })
+local PurchaseRight = PurchaseGrid:CreateGroup({ direction = "column" })
+
+PurchaseLeft:CreateSection({ name = "Cash" })
+
+PurchaseLeft:CreateToggle({
+    name = "Auto Collect Cash",
+    flag = "AutoCollectCash",
+    value = false,
+    callback = function(Value)
+        Settings.AutoCollectCash = Value
+
+        if Value then
+            StartAutoCollectCash()
+            Log("Auto Collect Cash enabled.")
+        else
+            StopAutoCollectCash()
+            Log("Auto Collect Cash disabled.")
+        end
+    end
+})
+
+PurchaseLeft:CreateSlider({
+    name = "Cash Collect Delay",
+    range = { 1, 60 },
+    increment = 1,
+    value = 10,
+    suffix = "s",
+    flag = "CashCollectDelay",
+    callback = function(Value)
+        Settings.CashCollectDelay = Value
+    end
+})
+
+PurchaseRight:CreateSection({ name = "Purchases" })
+
+PurchaseRight:CreateToggle({
+    name = "Auto Buy Best Aura",
+    flag = "AutoBuyBestAura",
+    value = false,
+    callback = function(Value)
+        Settings.AutoBuyBestAura = Value
+
+        if Value then
+            RefreshAuraTarget()
+            CheckAuraCash()
+            Log("Auto Aura purchases enabled.")
+        else
+            CurrentAuraTarget = nil
+            Log("Auto Aura purchases disabled.")
+        end
+    end
+})
+
+PurchaseRight:CreateToggle({
+    name = "Auto Buy Best Water Pump",
+    flag = "AutoBuyBestPump",
+    value = false,
+    callback = function(Value)
+        Settings.AutoBuyBestPump = Value
+
+        if Value then
+            RefreshPumpTarget()
+            CheckPumpCash()
+            Log("Auto Pump purchases enabled.")
+        else
+            CurrentPumpTarget = nil
+            Log("Auto Pump purchases disabled.")
+        end
+    end
+})
+
+PurchaseRight:CreateToggle({
+    name = "Auto Buy Upgrades",
+    flag = "AutoBuyUpgrades",
+    value = false,
+    callback = function(Value)
+        Settings.AutoBuyUpgrades = Value
+
+        if Value then
+            CheckUpgradeCash()
+            Log("Auto Upgrade purchases enabled.")
+        else
+            Log("Auto Upgrade purchases disabled.")
+        end
+    end
+})
+
+--============================================================
+-- Progression tab
+--============================================================
+
+ProgressionTab:CreateToggle({
+    name = "Auto Rebirth",
+    flag = "AutoRebirth",
+    value = false,
+    callback = function(Value)
+        Settings.AutoRebirth = Value
+        RebirthBusy = false
+        LastRebirthText = nil
+
+        if Value then
+            TryAutoRebirth()
+            Log("Auto Rebirth enabled.")
+        else
+            Log("Auto Rebirth disabled.")
+        end
+    end
+})
+
+local RebirthStatusText = ProgressionTab:CreateText({
+    name = "Current Rebirth Progress",
+    text = tostring(RebirthProgressLabel.Text)
+})
+
+TrackConnection(RebirthProgressLabel:GetPropertyChangedSignal("Text"):Connect(function()
+    RebirthStatusText:Set(tostring(RebirthProgressLabel.Text))
+end))
+
+--============================================================
+-- Settings tab
+--============================================================
+
+local AppearanceGrid = SettingsTab:CreateGroup()
+local AppearanceLeft = AppearanceGrid:CreateGroup({ direction = "column" })
+local AppearanceRight = AppearanceGrid:CreateGroup({ direction = "column" })
+
+AppearanceLeft:CreateDropdown({
+    name = "Theme",
+    options = { "default", "cobalt", "ember", "amethyst", "frost", "rose" },
+    value = "cobalt",
+    flag = "Theme",
+    callback = function(Value)
+        Window:ChangeTheme(Value)
+        Log("Theme changed to " .. tostring(Value))
+    end
+})
+
+AppearanceRight:CreateDropdown({
+    name = "Language",
+    options = { "English", "Español" },
+    value = "English",
+    flag = "Language",
+    callback = function(Value)
+        Window:SetLocale(Value == "Español" and "es" or "en")
+    end
+})
+
+SettingsTab:CreateInput({
+    name = "Sidebar Profile",
+    description = "Change the small profile line shown at the bottom of the sidebar.",
+    value = "Fishing Automation",
+    placeholder = "Profile text",
+    flag = "SidebarProfile",
+    callback = function(Text)
+        if tostring(Text) == "" then
+            Window:SetProfile(nil)
+        else
+            Window:SetProfile(tostring(Text))
+        end
+    end
+})
+
+SettingsTab:CreateKeybind({
+    name = "Emergency Stop Key",
+    description = "Press this key at any time to turn every automation toggle off.",
+    value = Enum.KeyCode.P,
+    flag = "EmergencyStopKey",
+    callback = function()
+        StopAllAutomation()
+    end,
+    onChanged = function(Key)
+        Log("Emergency stop key changed to " .. tostring(Key))
+    end
+})
+
+SettingsTab:CreateColorPicker({
+    name = "Status Tag Color",
+    description = "Changes the ACTIVE status tag color used by the dashboard.",
+    color = Color3.fromRGB(65, 190, 120),
+    alpha = 1,
+    flag = "StatusTagColor",
+    callback = function(Color)
+        if CountActiveAutomation() > 0 then
+            StatusTag:SetColor(Color)
+        end
+    end
+})
+
+SettingsTab:CreateDivider({ text = "Configuration" })
+
+local ConfigActions = SettingsTab:CreateGroup()
+
+ConfigActions:CreateButton({
+    name = "Save",
+    callback = function()
+        if Window:Save() then
+            Toast("Configuration saved", "Your current values were written to disk.")
+            Log("Configuration saved manually.")
+        end
+    end
+})
+
+ConfigActions:CreateButton({
+    name = "Load",
+    callback = function()
+        if Window:Load() then
+            Toast("Configuration loaded", "Saved values were restored.")
+            Log("Configuration loaded manually.")
+        end
+    end
+})
+
+ConfigActions:CreateButton({
+    name = "Changelog",
+    callback = function()
+        Window:Popup({
+            title = "Fishing Hub",
+            subtitle = "Polished Rayfield Gen2 build",
+            boxes = {
+                {
+                    title = "New sidebar layout",
+                    description = "Farm, inventory, eggs, purchases, progression, settings, and diagnostics now have their own pages."
+                },
+                {
+                    title = "Live dashboard",
+                    description = "Backpack, capacity, cash, stage count, active automations, and runtime update live."
+                },
+                {
+                    title = "Secure Mode",
+                    description = "RAYFIELD_SECURE is enabled before the Gen2 loader executes."
+                },
+                {
+                    title = "Safer lifecycle",
+                    description = "Re-executing the script unloads the previous instance, and an emergency stop can disable every automation at once."
+                },
+                {
+                    title = "More controls",
+                    description = "Previously hidden timing values are now configurable from the UI."
+                }
+            },
+            options = {
+                { text = "Got it", style = "primary" }
+            }
+        })
+    end
+})
+
+SettingsTab:CreateDivider({ text = "Window" })
+
+local WindowActions = SettingsTab:CreateGroup()
+
+WindowActions:CreateButton({
+    name = "Hide",
+    callback = function()
+        Window:Hide()
+    end
+})
+
+WindowActions:CreateButton({
+    name = "Minimise",
+    callback = function()
+        Window:ToggleMinimise()
+    end
+})
+
+WindowActions:CreateButton({
+    name = "Unload Hub",
+    description = "Stops all features and removes the interface.",
+    callback = function()
+        Window:Popup({
+            title = "Unload Fishing Hub?",
+            content = "All automation will stop and the interface will be destroyed.",
+            options = {
+                { text = "Cancel" },
+                {
+                    text = "Unload",
+                    style = "danger",
+                    callback = function()
+                        if getgenv().__FISHING_HUB_UNLOAD == UnloadHub then
+                            getgenv().__FISHING_HUB_UNLOAD = nil
+                        end
+                        UnloadHub()
+                    end
+                }
+            }
+        })
+    end
+})
+
+--============================================================
+-- Diagnostics tab
+--============================================================
+
+DiagnosticsTab:CreateDivider({ text = "Environment" })
+
+DiagnosticsTab:CreateText({
+    name = "Secure Mode",
+    text = "Enabled before Rayfield initialization. No raw marketplace icons are used by this script."
+})
+
+DiagnosticsTab:CreateText({
+    name = "Config",
+    text = "Rayfield/Configurations/FishingHub/FishingHub.rfld"
+})
+
+local DiagnosticActions = DiagnosticsTab:CreateGroup()
+
+DiagnosticActions:CreateButton({
+    name = "Snapshot",
+    callback = function()
+        local Amount, Capacity = GetBackpackNumbers()
+        Log("Snapshot | Backpack " .. Amount .. "/" .. Capacity)
+        Log("Snapshot | Cash " .. tostring(CashValue.Value))
+        Log("Snapshot | Stages " .. tostring(#GetStages()))
+        Log("Snapshot | Active automation " .. tostring(CountActiveAutomation()))
+    end
+})
+
+DiagnosticActions:CreateButton({
+    name = "Clear Console",
+    callback = function()
+        DebugConsole:Clear()
+    end
+})
+
+DiagnosticActions:CreateButton({
+    name = "Copy Console",
+    callback = function()
+        if DebugConsole:Copy() then
+            Toast("Console copied", "Diagnostic output copied to clipboard.")
+        else
+            Toast("Clipboard unavailable", "This executor did not expose setclipboard.")
+        end
+    end
+})
+
+--============================================================
+-- Live dashboard updater
+--============================================================
+
+local function RefreshDashboard()
+    local Amount, Capacity = GetBackpackNumbers()
+    local Active = CountActiveAutomation()
+
+    BackpackAmountStat:Set(Amount)
+    BackpackCapacityStat:Set(Capacity)
+    CashStat:Set(tonumber(CashValue.Value) or 0)
+    ActiveStat:Set(Active)
+    StageStat:Set(#GetStages())
+    RuntimeStat:Set(math.floor(os.clock() - SessionStarted))
+
+    if Active > 0 then
+        local SavedColor = Window:Get("StatusTagColor")
+        local ActiveColor = typeof(SavedColor) == "Color3"
+            and SavedColor
+            or Color3.fromRGB(65, 190, 120)
+
+        StatusTag:Set({
+            text = "ACTIVE " .. tostring(Active),
+            color = ActiveColor
+        })
+
+        SessionSummary:Set(
+            tostring(Active)
+            .. " automation feature"
+            .. (Active == 1 and " is" or "s are")
+            .. " currently enabled."
+        )
+    else
+        StatusTag:Set({
+            text = "IDLE",
+            color = Color3.fromRGB(115, 120, 135)
+        })
+
+        SessionSummary:Set("No automation is currently active.")
+    end
+end
+
+TrackConnection(AmountValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
+TrackConnection(CapacityValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
+TrackConnection(CashValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
+
+local DashboardLoopID = 1
+
+task.spawn(function()
+    local ID = DashboardLoopID
+
+    while HubRunning and ID == DashboardLoopID and not Window.unloaded do
+        RefreshDashboard()
+        task.wait(0.5)
     end
 end)
 
---==================================================
--- RESPAWN HANDLING
---==================================================
+--============================================================
+-- Startup
+--============================================================
 
-LocalPlayer.CharacterAdded:Connect(
-    function(character)
+local StartAmount, StartCapacity = GetBackpackNumbers()
 
-        currentTarget = nil
+Log("Secure Mode: ENABLED")
+Log("Rayfield Gen2 loaded.")
+Log("Backpack: " .. StartAmount .. "/" .. StartCapacity)
+Log("Cash: " .. tostring(CashValue.Value))
+Log("Stages: " .. tostring(#GetStages()))
+Log("Eggs: " .. table.concat(GetEggDropdownOptions(), ", "))
 
-        if followConnection then
+RefreshDashboard()
 
-            followConnection:Disconnect()
-            followConnection = nil
-
-        end
-
-        task.wait(1)
-
-        if getgenv().AutoFarm then
-
-            startFarm()
-
-        end
-    end
-)
-
---==================================================
--- CONFIGURATION
---==================================================
-
-Rayfield:LoadConfiguration()
-
-print(
-    "[Testing] Combat & Farm loaded."
-)
+Window:Toast({
+    title = "Fishing Hub ready",
+    subtitle = "Polished Gen2 interface loaded securely.",
+    duration = 4
+})
