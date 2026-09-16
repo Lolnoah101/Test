@@ -62,6 +62,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
+local VirtualUser = game:GetService("VirtualUser")
 
 
 --// ============================================================
@@ -135,7 +136,10 @@ local Settings = {
     AutoBuyUpgrades = false,
 
     -- Progression
-    AutoRebirth = false
+    AutoRebirth = false,
+
+    -- Misc
+    AntiAFK = false
 }
 
 
@@ -3528,6 +3532,87 @@ TrackConnection(
 
 
 --// ============================================================
+--// ANTI AFK
+--// ============================================================
+
+local AntiAFKConnection = nil
+
+
+local function StartAntiAFK()
+
+    -- Prevent duplicate Idled connections if the toggle is re-enabled.
+    if AntiAFKConnection then
+
+        AntiAFKConnection:Disconnect()
+        AntiAFKConnection = nil
+
+    end
+
+    Settings.AntiAFK =
+        true
+
+
+    AntiAFKConnection =
+        LocalPlayer.Idled:Connect(function()
+
+            if
+                not HubRunning
+                or not Settings.AntiAFK
+            then
+
+                return
+            end
+
+
+            pcall(function()
+
+                VirtualUser:CaptureController()
+
+                local Camera =
+                    Workspace.CurrentCamera
+
+                local CameraCFrame =
+                    Camera
+                    and Camera.CFrame
+                    or CFrame.new()
+
+
+                VirtualUser:Button2Down(
+                    Vector2.new(0, 0),
+                    CameraCFrame
+                )
+
+
+                task.wait(0.10)
+
+
+                VirtualUser:Button2Up(
+                    Vector2.new(0, 0),
+                    CameraCFrame
+                )
+
+            end)
+
+        end)
+end
+
+
+local function StopAntiAFK()
+
+    Settings.AntiAFK =
+        false
+
+
+    if AntiAFKConnection then
+
+        AntiAFKConnection:Disconnect()
+        AntiAFKConnection = nil
+
+    end
+end
+
+
+--// ============================================================
 --// UNLOAD
 --// ============================================================
 
@@ -3572,6 +3657,11 @@ local function UnloadHub()
     Settings.AutoRebirth =
         false
 
+    Settings.AntiAFK =
+        false
+
+
+    StopAntiAFK()
 
     StopAutoWater()
 
@@ -3714,7 +3804,8 @@ local AutomationFlags = {
     "AutoBuyBestAura",
     "AutoBuyBestPump",
     "AutoBuyUpgrades",
-    "AutoRebirth"
+    "AutoRebirth",
+    "AntiAFK"
 }
 
 local function CountActiveAutomation()
@@ -3730,6 +3821,7 @@ local function CountActiveAutomation()
     if Settings.AutoBuyBestPump then Count += 1 end
     if Settings.AutoBuyUpgrades then Count += 1 end
     if Settings.AutoRebirth then Count += 1 end
+    if Settings.AntiAFK then Count += 1 end
 
     return Count
 end
@@ -4227,6 +4319,43 @@ end))
 -- Settings tab
 --============================================================
 
+SettingsTab:CreateSection({ name = "Player" })
+
+SettingsTab:CreateToggle({
+    name = "Anti AFK",
+    flag = "AntiAFK",
+    value = false,
+    forgetState = true,
+    callback = function(Value)
+
+        if Value then
+
+            StartAntiAFK()
+
+            Log("Anti AFK enabled.")
+
+            Toast(
+                "Anti AFK",
+                "Enabled. Idle events will be prevented."
+            )
+
+        else
+
+            StopAntiAFK()
+
+            Log("Anti AFK disabled.")
+
+            Toast(
+                "Anti AFK",
+                "Disabled."
+            )
+
+        end
+    end
+})
+
+SettingsTab:CreateDivider({ text = "Appearance" })
+
 local AppearanceGrid = SettingsTab:CreateGroup()
 local AppearanceLeft = AppearanceGrid:CreateGroup({ direction = "column" })
 local AppearanceRight = AppearanceGrid:CreateGroup({ direction = "column" })
@@ -4420,6 +4549,7 @@ DiagnosticActions:CreateButton({
         Log("Snapshot | Cash " .. tostring(CashValue.Value))
         Log("Snapshot | Stages " .. tostring(#GetStages()))
         Log("Snapshot | Active automation " .. tostring(CountActiveAutomation()))
+        Log("Snapshot | Anti AFK " .. (Settings.AntiAFK and "ON" or "OFF"))
     end
 })
 
@@ -4510,6 +4640,7 @@ Log("Backpack: " .. StartAmount .. "/" .. StartCapacity)
 Log("Cash: " .. tostring(CashValue.Value))
 Log("Stages: " .. tostring(#GetStages()))
 Log("Eggs: " .. table.concat(GetEggDropdownOptions(), ", "))
+Log("Anti AFK: ready")
 
 RefreshDashboard()
 
