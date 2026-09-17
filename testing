@@ -1,509 +1,378 @@
 --// ============================================================
---// Fishing Hub - Rayfield Gen2
---//
---// FEATURES
---//
---// Water / Fish Farm
---//   - Auto Water
---//   - Auto Farm Fish
---//   - Stage Drain Timeout
---//   - Highest Price / Rarity fish selection
---//
---// Backpack / Fish
---//   - Auto Home When Full
---//   - Equip Best Fish
---//   - Auto Sell All
---//   - Sell Lock Rarity
---//
---// Eggs
---//   - Egg selector
---//   - Auto Open Egg
---//   - Egg Auto Delete
---//
---// Cash
---//   - Auto Collect Cash
---//
---// Purchases
---//   - Auto Buy Best Aura
---//   - Auto Buy Best Water Pump
---//   - Auto Buy Upgrades
---//
---// Progression
---//   - Auto Rebirth
---//
---// Misc
---//   - Unload Hub
+--// SHADOW GARDEN - RAYFIELD GEN2 EGG HUB
+--// Smooth Tween Movement + Auto Pickup + Plot Return
 --// ============================================================
 
-
---// ============================================================
---// RAYFIELD / SESSION BOOTSTRAP
---// ============================================================
-
--- Cleanly unload a previous copy before rebuilding the interface.
-if getgenv().__FISHING_HUB_UNLOAD then
-    pcall(getgenv().__FISHING_HUB_UNLOAD)
-    getgenv().__FISHING_HUB_UNLOAD = nil
-end
-
--- Rayfield Gen2 Secure Mode MUST be enabled before Rayfield loads.
-getgenv().RAYFIELD_SECURE = true
-
-local Rayfield = loadstring(game:HttpGet(
-    "https://sirius.menu/gen2"
-))()
-
+--// NOTE:
+--// This version uses the Rayfield Gen2 UI/features from your other script,
+--// but does not enable anti-cheat evasion / concealment features.
 
 --// ============================================================
 --// SERVICES
 --// ============================================================
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
-local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 local VirtualUser = game:GetService("VirtualUser")
 
+local PetAging =
+    require(
+        ReplicatedStorage
+            :WaitForChild("GameServices")
+            :WaitForChild("PetAging")
+    )
 
---// ============================================================
---// PLAYER
---// ============================================================
+local PetsData =
+    require(
+        ReplicatedStorage
+            :WaitForChild("GameData")
+            :WaitForChild("Pets")
+    )
+
+local Mutations =
+    require(
+        ReplicatedStorage
+            :WaitForChild("GameData")
+            :WaitForChild("Mutations")
+    )
+
+local GeneralService =
+    require(
+        ReplicatedStorage
+            :WaitForChild("GameServices")
+            :WaitForChild("General")
+    )
+
+local HatchLuck =
+    require(
+        ReplicatedStorage
+            :WaitForChild("GameData")
+            :WaitForChild("HatchLuck")
+    )
 
 local LocalPlayer = Players.LocalPlayer
 
+local PetRenderer =
+    require(
+        LocalPlayer
+            :WaitForChild("PlayerScripts")
+            :WaitForChild("Game")
+            :WaitForChild("Pets")
+            :WaitForChild("PetRenderer")
+    )
+
+local RenderedEggs = Workspace:WaitForChild("RenderedEggs")
+local Plots = Workspace:WaitForChild("Plots")
+local Backpack = LocalPlayer:WaitForChild("Backpack")
+
+local GameRemotes =
+    ReplicatedStorage
+        :WaitForChild("Remotes")
+        :WaitForChild("Game")
+
+local EggPlacedEvent =
+    GameRemotes:WaitForChild("EggPlaced")
+
+local HatchEvent =
+    GameRemotes:WaitForChild("Hatch")
+
+local PlacePetEvent =
+    GameRemotes:WaitForChild("PlacePet")
+
+local PickupPetEvent =
+    GameRemotes:WaitForChild("PickupPet")
+
+local FeedPetEvent =
+    GameRemotes:WaitForChild("FeedPet")
+
+local PlotRemotes =
+    GameRemotes:WaitForChild("Plot")
+
+local HatchLuckUpgradeEvent =
+    PlotRemotes:WaitForChild("Upgrades")
+
+local DialogueSelectEvent =
+    ReplicatedStorage
+        :WaitForChild("Dialogue")
+        :WaitForChild("Remotes")
+        :WaitForChild("DialogueSelect")
+
+--// ============================================================
+--// RAYFIELD
+--// ============================================================
+
+local function LoadRayfield()
+    local URL = "https://sirius.menu/gen2"
+    local LastError = "Unknown error"
+
+    for Attempt = 1, 3 do
+        local HttpSuccess, SourceOrError =
+            pcall(function()
+                return game:HttpGet(URL)
+            end)
+
+        if HttpSuccess and typeof(SourceOrError) == "string" then
+            local CompileSuccess, ChunkOrError =
+                pcall(function()
+                    return loadstring(SourceOrError)
+                end)
+
+            if CompileSuccess
+                and typeof(ChunkOrError) == "function"
+            then
+                local RunSuccess, LibraryOrError =
+                    pcall(ChunkOrError)
+
+                if RunSuccess
+                    and LibraryOrError ~= nil
+                    and typeof(LibraryOrError.CreateWindow) == "function"
+                then
+                    return LibraryOrError
+                end
+
+                LastError =
+                    RunSuccess
+                    and "Rayfield loader returned nil/invalid library."
+                    or tostring(LibraryOrError)
+
+            else
+                LastError =
+                    CompileSuccess
+                    and "loadstring did not return a function."
+                    or tostring(ChunkOrError)
+            end
+
+        else
+            LastError =
+                HttpSuccess
+                and "HttpGet returned a non-string response."
+                or tostring(SourceOrError)
+        end
+
+        task.wait(0.75)
+    end
+
+    error(
+        "Failed to load Rayfield Gen2 after 3 attempts: "
+            .. tostring(LastError)
+    )
+end
+
+local Rayfield = LoadRayfield()
 
 --// ============================================================
 --// SETTINGS
 --// ============================================================
 
 local Settings = {
+    SelectedLucks = {
+        ["5 Luck"] = true,
+    },
 
-    -- Water
-    AutoWater = false,
+    AutoPickup = false,
 
-    -- Throttle water requests instead of firing every Heartbeat.
-    WaterInterval = 0.10,
+    -- Backpack egg placement is independent from Auto Pickup.
+    AutoPlaceEgg = false,
+    AutoPlaceDelay = 0.20,
+    SelectedPlaceEggs = {},
 
-    -- Fish Farm
-    AutoFarmFish = false,
+    -- Auto hatch placed eggs once their Hatch prompt is enabled.
+    AutoHatch = false,
+    AutoHatchDelay = 0.20,
 
-    FishFarmMode = "Highest Price",
+    -- Automatically buy the next hatch-luck upgrade when affordable.
+    AutoHatchLuckUpgrade = false,
+    HatchLuckUpgradeDelay = 0.35,
 
-    FishRarity = "Any",
+    -- Automatically keep the highest-income owned pets placed.
+    AutoPlaceBestPets = false,
+    BestPetsCheckDelay = 2.0,
 
-    StageDrainTimeout = 10,
+    -- Automatically use Richie's pet-selling dialogue when pet tools exist.
+    AutoSellPets = false,
 
-    FishPickupDelay = 0.15,
+    -- Automatically feed the current best pets.
+    AutoFeedBestPets = false,
+    SelectedPetFoods = {
+        Grass = true,
+    },
+    AutoFeedBestPetsDelay = 2.0,
 
-    -- Give the home/sell sequence time to actually clear the backpack.
-    BackpackResetTimeout = 4,
+    -- Keeps the client active when Roblox fires LocalPlayer.Idled.
+    AntiAFK = true,
 
-    -- Small settle delay before the farm teleports back out.
-    FarmResumeDelay = 0.25,
+    SearchDelay = 0.25,
 
-    -- Backpack
-    AutoHome = false,
+    TweenSpeed = 120,
+    EggOffsetY = 2.5,
+    EggOffsetZ = 2,
+    PlotOffsetY = 5,
 
-    AutoSellFish = false,
+    PickupSettleDelay = 0.15,
+    ReturnDelay = 0.15,
 
-    SellLockRarity = "OFF",
-
-    TeleportDelay = 0.35,
-
-    BestFishDelay = 0.35,
-
-    -- Eggs
-    AutoOpenEgg = false,
-
-    EggId = 4,
-
-    EggOpenAmount = 3,
-
-    EggOpenDelay = 0.15,
-
-    EggAutoDelete = true,
-
-    -- Cash
-    AutoCollectCash = false,
-
-    CashCollectDelay = 10,
-
-    -- Purchases
-    AutoBuyBestAura = false,
-
-    AutoBuyBestPump = false,
-
-    AutoBuyUpgrades = false,
-
-    -- Progression
-    AutoRebirth = false,
-
-    -- Misc
-    AntiAFK = false
+    HighlightColor = Color3.fromRGB(65, 190, 120),
 }
 
-
---// ============================================================
---// RARITIES
---// ============================================================
-
-local FishRarities = {
-
-    "Common",
-    "Rare",
-    "Epic",
-    "Legendary",
-    "Mythic",
-    "Exotic",
-    "Secret",
-    "Celestial",
-    "Void",
-    "Divine",
-    "Transcendent",
-    "Eternal",
-    "Singularity",
-    "Genesis",
-    "Supreme",
-    "Exclusive"
+local LuckOptions = {
+    "1 Luck",
+    "5 Luck",
+    "30 Luck",
+    "50 Luck",
+    "100 Luck",
+    "200 Luck",
+    "500 Luck",
+    "750 Luck",
+    "1K Luck",
+    "3K Luck",
+    "10K Luck",
+    "30K Luck",
+    "90K Luck",
+    "150K Luck",
+    "250K Luck",
+    "500K Luck",
+    "700K Luck",
+    "1M Luck",
+    "3M Luck",
+    "7M Luck",
+    "300M Luck",
+    "1.5B Luck",
+    "100B Luck",
+    "1T Luck",
 }
 
-
-local SellLockRarities = {
-
-    "OFF",
-
-    "Common",
-    "Rare",
-    "Epic",
-    "Legendary",
-    "Mythic",
-    "Exotic",
-    "Secret",
-    "Celestial",
-    "Void",
-    "Divine",
-    "Transcendent",
-    "Eternal",
-    "Singularity",
-    "Genesis",
-    "Supreme",
-    "Exclusive"
+local ThemeOptions = {
+    "default",
+    "cobalt",
+    "ember",
+    "amethyst",
+    "frost",
+    "rose",
 }
 
+local PetFoodOptions = {
+    "Grass",
+    "Bone",
+    "Meat",
+    "Magic Apple",
+    "Dragonfruit",
+}
 
 --// ============================================================
 --// RUNTIME
 --// ============================================================
 
 local HubRunning = true
+local IsPickingUp = false
+local PickupCount = 0
+local SearchCount = 0
+local SessionStarted = os.clock()
+local ActiveMovementTween = nil
+local MovementGeneration = 0
 
-local Connections = {}
+local AntiAFKConnection = nil
+local AntiAFKTriggers = 0
 
--- Shared farm/backpack transition state.
-local BackpackSequenceBusy = false
-local BackpackFullHandled = false
-local FarmWaitingForBackpack = false
+local function SendAntiAFKInput()
+    if not HubRunning or not Settings.AntiAFK then
+        return
+    end
 
+    AntiAFKTriggers += 1
 
-local function TrackConnection(Connection)
+    local Camera = Workspace.CurrentCamera
+    local CameraCFrame =
+        Camera and Camera.CFrame
+        or CFrame.new()
 
-    table.insert(
-        Connections,
-        Connection
-    )
+    local Success, ErrorMessage =
+        pcall(function()
+            VirtualUser:CaptureController()
 
-    return Connection
+            VirtualUser:Button2Down(
+                Vector2.new(0, 0),
+                CameraCFrame
+            )
+
+            task.wait(0.05)
+
+            VirtualUser:Button2Up(
+                Vector2.new(0, 0),
+                CameraCFrame
+            )
+        end)
+
+    if Success then
+        Log(
+            "Anti AFK triggered • "
+                .. tostring(AntiAFKTriggers)
+        )
+    else
+        warn(
+            "[Shadow Garden] Anti AFK failed: "
+                .. tostring(ErrorMessage)
+        )
+    end
 end
 
+AntiAFKConnection =
+    LocalPlayer.Idled:Connect(
+        SendAntiAFKInput
+    )
 
 --// ============================================================
---// PLAYER DATA
---// ============================================================
-
-local BackpackData =
-    LocalPlayer:WaitForChild(
-        "BackpackData"
-    )
-
-
-local AmountValue =
-    BackpackData:WaitForChild(
-        "amount"
-    )
-
-
-local CapacityValue =
-    BackpackData:WaitForChild(
-        "capacity"
-    )
-
-
-local CashFolder =
-    LocalPlayer:WaitForChild(
-        "Cash"
-    )
-
-
-local CashValue =
-    CashFolder:WaitForChild(
-        "cash"
-    )
-
-
---// ============================================================
---// PLAYER GUI
---// ============================================================
-
-local PlayerGui =
-    LocalPlayer:WaitForChild(
-        "PlayerGui"
-    )
-
-
-local MainGui =
-    PlayerGui:WaitForChild(
-        "Main"
-    )
-
-
-local AuraScrollingFrame =
-    MainGui
-        :WaitForChild("Aura")
-        :WaitForChild("Main")
-        :WaitForChild("ScrollingFrame")
-
-
-local PumpScrollingFrame =
-    MainGui
-        :WaitForChild("Water Pump")
-        :WaitForChild("Main")
-        :WaitForChild("ScrollingFrame")
-
-
-local UpgradeScrollingFrame =
-    MainGui
-        :WaitForChild("Upgrades")
-        :WaitForChild("Main")
-        :WaitForChild("ScrollingFrame")
-
-
-local RebirthProgressLabel =
-    MainGui
-        :WaitForChild("Rebirth+1water")
-        :WaitForChild("UI1")
-        :WaitForChild("Progress bar")
-        :WaitForChild("TextLabel")
-
-
---// ============================================================
---// REMOTES
---// ============================================================
-
-local RemoteFolder =
-    ReplicatedStorage:WaitForChild(
-        "Remote"
-    )
-
-
-local EventFolder =
-    RemoteFolder:WaitForChild(
-        "Event"
-    )
-
-
-local FunctionFolder =
-    RemoteFolder:WaitForChild(
-        "Function"
-    )
-
-
--- Water
-
-local WaterEvent =
-    EventFolder
-        :WaitForChild("Level")
-        :WaitForChild("[C-S]Click")
-
-
--- Aura
-
-local AuraBuyEvent =
-    EventFolder
-        :WaitForChild("Aura")
-        :WaitForChild("[C-S]BuyCashAura")
-
-
--- Pump
-
-local PumpBuyEvent =
-    EventFolder
-        :WaitForChild("Pump")
-        :WaitForChild("[C-S]BuyCashPump")
-
-
--- Upgrades
-
-local UpgradeBuyEvent =
-    EventFolder
-        :WaitForChild("Upgrade")
-        :WaitForChild("[C-S]BuyCashUpgrade")
-
-
--- Rebirth
-
-local RebirthEvent =
-    EventFolder
-        :WaitForChild("Rebirth")
-        :WaitForChild("[C - S]TryRebirth")
-
-
--- Fish
-
-local FishFunctionFolder =
-    FunctionFolder:WaitForChild(
-        "Fish"
-    )
-
-
-local BestFishEvent =
-    FunctionFolder
-        :WaitForChild("FishShow")
-        :WaitForChild("[C-S]BestFishUI")
-
-
-local SellAllFishEvent =
-    FishFunctionFolder:WaitForChild(
-        "[C-S]SellAllFish"
-    )
-
-
-local SetSellLockRarityEvent =
-    FishFunctionFolder:WaitForChild(
-        "[C-S]SetSellLockRarity"
-    )
-
-
--- Eggs
-
-local EggFunctionFolder =
-    FunctionFolder:WaitForChild(
-        "Egg"
-    )
-
-
-local OpenEggFunction =
-    EggFunctionFolder:WaitForChild(
-        "[C-S]OpenEgg"
-    )
-
-
---// ============================================================
---// ENCODED NAMES
---// ============================================================
-
--- 玩家区域
-local PLAYER_AREA_NAME =
-    "\231\142\169\229\174\182\229\140\186\229\159\159"
-
-
--- 放置按钮
-local PLACE_BUTTON_NAME =
-    "\230\148\190\231\189\174\230\140\137\233\146\174"
-
-
--- 收集按钮
-local COLLECT_BUTTON_NAME =
-    "\230\148\182\233\155\134\230\140\137\233\146\174"
-
-
--- 主场景
-local MAIN_SCENE_NAME =
-    "\228\184\187\229\156\186\230\153\175"
-
-
--- 验证场景
-local FARM_SCENE_NAME =
-    "\233\170\140\232\175\129\229\156\186\230\153\175"
-
-
--- 关卡
-local STAGE_PREFIX =
-    "\229\133\179\229\141\161"
-
-
--- 水面
-local WATER_NAME =
-    "\230\176\180\233\157\162"
-
-
---// ============================================================
---// WORLD OBJECTS
---// ============================================================
-
-local HomeTarget =
-    Workspace
-        :WaitForChild("PlayerEar")
-        :WaitForChild("2")
-        :WaitForChild(PLAYER_AREA_NAME)
-        :WaitForChild(PLACE_BUTTON_NAME)
-
-
-local EggZoneFolder =
-    Workspace:WaitForChild(
-        "UIOPEN"
-    )
-
-
---// ============================================================
---// WINDOW / NAVIGATION
+--// WINDOW
 --// ============================================================
 
 local Window = Rayfield:CreateWindow({
-    name = "[UPD] +1 Drain Water Per Click",
-    subtitle = "By • HollowMoonHub",
+    name = "Shadow Garden",
+    subtitle = "Egg Automation",
     sidebarLayout = true,
-    profile = "[UPD] +1 Drain Water Per Click",
-    showName = "HollowMoonHub",
+
+    profile = "Shadow Garden",
+    showName = "Shadow Garden",
     showIconOnly = true,
+
     theme = "cobalt",
     fallbackFont = Enum.Font.Gotham,
 
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "[UPD] +1 Drain Water Per Click",
-        customFolder = "[UPD] +1 Drain Water Per Click"
+        fileName = "ShadowGardenEggHub",
+        customFolder = "ShadowGardenEggHub",
     },
 
     translations = {
         es = {
             ["Dashboard"] = "Panel",
-            ["Farm"] = "Granja",
-            ["Inventory"] = "Inventario",
             ["Eggs"] = "Huevos",
-            ["Purchases"] = "Compras",
-            ["Progression"] = "Progreso",
             ["Settings"] = "Configuración",
             ["Diagnostics"] = "Diagnóstico",
-            ["Auto Water"] = "Agua automática",
-            ["Auto Farm Fish"] = "Pesca automática",
-            ["Auto Home When Full"] = "Volver a casa al llenarse",
-            ["Auto Sell All Fish"] = "Vender peces automáticamente",
-            ["Auto Open Egg"] = "Abrir huevo automáticamente",
-            ["Auto Collect Cash"] = "Recoger dinero automáticamente",
-            ["Auto Buy Best Aura"] = "Comprar mejor aura",
-            ["Auto Buy Best Water Pump"] = "Comprar mejor bomba",
-            ["Auto Buy Upgrades"] = "Comprar mejoras automáticamente",
-            ["Auto Rebirth"] = "Renacer automáticamente",
+            ["Auto Pickup"] = "Recogida automática",
+            ["Auto Place Egg"] = "Colocar huevo automáticamente",
+            ["Auto Hatch"] = "Eclosión automática",
+            ["Auto Hatch Luck Upgrade"] = "Mejorar suerte de eclosión automáticamente",
+            ["Auto Place Best Pets"] = "Colocar mejores mascotas automáticamente",
+            ["Auto Sell Pets"] = "Vender mascotas automáticamente",
+            ["Auto Feed Best Pets"] = "Alimentar mejores mascotas automáticamente",
+            ["Egg Luck"] = "Suerte del huevo",
             ["Theme"] = "Tema",
-            ["Language"] = "Idioma"
+            ["Language"] = "Idioma",
+            ["Tween Speed"] = "Velocidad de movimiento",
         }
     }
 })
 
-local SecureTag = Window:CreateTag({
-    text = "SECURE",
-    color = Color3.fromRGB(65, 190, 120),
+--// ============================================================
+--// TAGS
+--// ============================================================
+
+local Gen2Tag = Window:CreateTag({
+    text = "GEN2",
+    color = Color3.fromRGB(80, 130, 255),
     order = 1
 })
 
@@ -513,67 +382,2079 @@ local StatusTag = Window:CreateTag({
     order = 2
 })
 
+--// ============================================================
+--// NAVIGATION
+--// ============================================================
+
 Window:CreateSection({ name = "Overview" })
 local DashboardTab = Window:CreateTab({ name = "Dashboard" })
 
 Window:CreateSection({ name = "Automation" })
-local FarmTab = Window:CreateTab({ name = "Farm" })
-local InventoryTab = Window:CreateTab({ name = "Inventory" })
 local EggsTab = Window:CreateTab({ name = "Eggs" })
-local PurchasesTab = Window:CreateTab({ name = "Purchases" })
-local ProgressionTab = Window:CreateTab({ name = "Progression" })
+local PetsTab = Window:CreateTab({ name = "Pets" })
 
 Window:CreateSection({ name = "Interface" })
 local SettingsTab = Window:CreateTab({ name = "Settings" })
 local DiagnosticsTab = Window:CreateTab({ name = "Diagnostics" })
 
+--// ============================================================
+--// UI HELPERS
+--// ============================================================
+
+local function Toast(Title, Subtitle)
+    Window:Toast({
+        title = Title,
+        subtitle = Subtitle or "",
+        duration = 3
+    })
+end
+
+local function Notify(Title, Content, Duration)
+    Window:Notify({
+        title = Title,
+        content = Content,
+        duration = Duration or 4
+    })
+end
+
+local DebugConsole = DiagnosticsTab:CreateConsole({
+    name = "Shadow Garden Console",
+    text = "Shadow Garden initialized.",
+    height = 180,
+    follow = true,
+    maxLines = 200
+})
+
+local function Log(Message)
+    local Text = "[" .. os.date("%H:%M:%S") .. "] " .. tostring(Message)
+
+    print(Text)
+
+    pcall(function()
+        DebugConsole:Append(Text)
+    end)
+end
 
 --// ============================================================
---// UTILITIES
+--// CHARACTER
 --// ============================================================
 
 local function GetCharacter()
-
-    local Character =
-        LocalPlayer.Character
-
+    local Character = LocalPlayer.Character
 
     if not Character then
-
-        Character =
-            LocalPlayer.CharacterAdded:Wait()
-
+        Character = LocalPlayer.CharacterAdded:Wait()
     end
-
 
     return Character
 end
 
-
 local function GetRoot()
+    local Character = GetCharacter()
 
-    local Character =
-        LocalPlayer.Character
+    return Character:FindFirstChild("HumanoidRootPart")
+        or Character:WaitForChild("HumanoidRootPart", 5)
+end
+
+--// ============================================================
+--// SMOOTH TWEEN MOVEMENT
+--// ============================================================
+
+local function CancelActiveMovement()
+    -- Invalidate any movement loop currently running.
+    MovementGeneration += 1
+
+    -- Cancel the active TweenService tween exactly once.
+    local Tween = ActiveMovementTween
+    ActiveMovementTween = nil
+
+    if Tween then
+        pcall(function()
+            Tween:Cancel()
+        end)
+    end
+
+    -- Stop leftover character momentum.
+    local Character = LocalPlayer.Character
+    local Root = Character
+        and Character:FindFirstChild("HumanoidRootPart")
+
+    if Root then
+        Root.AssemblyLinearVelocity = Vector3.zero
+        Root.AssemblyAngularVelocity = Vector3.zero
+    end
+end
 
 
-    if not Character then
+local function TweenToCFrame(Target, ContinueCheck)
+    local Root = GetRoot()
+
+    if not Root or typeof(Target) ~= "CFrame" then
+        return false
+    end
+
+    -- Starting a new movement invalidates any older movement.
+    CancelActiveMovement()
+
+    local MyGeneration = MovementGeneration
+
+    Root.AssemblyLinearVelocity = Vector3.zero
+    Root.AssemblyAngularVelocity = Vector3.zero
+
+    -- Move in short TweenService segments instead of one long tween.
+    -- This makes Tween Speed react while the slider is being moved.
+    while HubRunning and MyGeneration == MovementGeneration do
+        if ContinueCheck and not ContinueCheck() then
+            CancelActiveMovement()
+            return false
+        end
+
+        Root = GetRoot()
+
+        if not Root then
+            CancelActiveMovement()
+            return false
+        end
+
+        local Delta = Target.Position - Root.Position
+        local Distance = Delta.Magnitude
+
+        if Distance <= 0.75 then
+            Root.CFrame = Target
+            Root.AssemblyLinearVelocity = Vector3.zero
+            Root.AssemblyAngularVelocity = Vector3.zero
+
+            if ActiveMovementTween then
+                ActiveMovementTween = nil
+            end
+
+            return true
+        end
+
+        -- Read the setting EVERY segment so slider changes apply immediately.
+        local Speed = math.max(
+            tonumber(Settings.TweenSpeed) or 120,
+            1
+        )
+
+        -- Short segment duration keeps live speed changes responsive.
+        local SegmentTime = 0.10
+        local StepDistance = math.min(
+            Distance,
+            Speed * SegmentTime
+        )
+
+        local Direction = Delta.Unit
+        local NextPosition =
+            Root.Position + Direction * StepDistance
+
+        local Alpha = math.clamp(
+            StepDistance / math.max(Distance, 0.001),
+            0,
+            1
+        )
+
+        local NextCFrame =
+            Root.CFrame:Lerp(Target, Alpha)
+
+        -- Keep the calculated position exact while preserving interpolated rotation.
+        NextCFrame = CFrame.new(NextPosition) * NextCFrame.Rotation
+
+        local ActualTime =
+            math.max(
+                StepDistance / Speed,
+                0.02
+            )
+
+        local Tween = TweenService:Create(
+            Root,
+            TweenInfo.new(
+                ActualTime,
+                Enum.EasingStyle.Linear,
+                Enum.EasingDirection.Out
+            ),
+            {
+                CFrame = NextCFrame
+            }
+        )
+
+        ActiveMovementTween = Tween
+        Tween:Play()
+
+        local State = Tween.Completed:Wait()
+
+        if ActiveMovementTween == Tween then
+            ActiveMovementTween = nil
+        end
+
+        if MyGeneration ~= MovementGeneration then
+            return false
+        end
+
+        if State ~= Enum.PlaybackState.Completed then
+            return false
+        end
+    end
+
+    return false
+end
+
+--// ============================================================
+--// PLAYER PLOT
+--// ============================================================
+
+local function GetPlayerPlot()
+    for _, Plot in ipairs(Plots:GetChildren()) do
+        local Data = Plot:FindFirstChild("Data")
+        local Owner = Data and Data:FindFirstChild("Owner")
+
+        if Owner and Owner:IsA("ObjectValue") then
+            if Owner.Value == LocalPlayer then
+                return Plot
+            end
+
+            if Owner.Value and Owner.Value.Name == LocalPlayer.Name then
+                return Plot
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetPlotTarget(Plot)
+    if not Plot then
         return nil
     end
 
+    local Baseplate = Plot:FindFirstChild("Baseplate")
 
-    return Character:FindFirstChild(
-        "HumanoidRootPart"
+    if Baseplate and Baseplate:IsA("BasePart") then
+        return Baseplate
+    end
+
+    local Spawn = Plot:FindFirstChildWhichIsA("SpawnLocation", true)
+
+    if Spawn then
+        return Spawn
+    end
+
+    if Plot:IsA("Model") and Plot.PrimaryPart then
+        return Plot.PrimaryPart
+    end
+
+    return Plot:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function TweenToPlot()
+    local Plot = GetPlayerPlot()
+
+    if not Plot then
+        return false, "Your plot could not be found."
+    end
+
+    local Target = GetPlotTarget(Plot)
+
+    if not Target then
+        return false, "Your plot was found, but no usable BasePart was found."
+    end
+
+    Log("Tweening back to plot: " .. Plot.Name)
+
+    local Success = TweenToCFrame(
+        Target.CFrame * CFrame.new(
+            0,
+            Settings.PlotOffsetY,
+            0
+        ),
+        function()
+            return (not IsPickingUp) or Settings.AutoPickup
+        end
+    )
+
+    if not Success then
+        return false, "Tween to plot was interrupted."
+    end
+
+    return true
+end
+
+--// ============================================================
+--// EGG DATA
+--// ============================================================
+
+local function CleanLuck(Value)
+    if Value == nil then
+        return nil
+    end
+
+    Value = tostring(Value)
+    Value = Value:gsub("[Ll][Uu][Cc][Kk]", "")
+    Value = Value:gsub("%s+", "")
+    Value = Value:upper()
+
+    return Value
+end
+
+local function NormalizeLuckSelection(Value)
+    local Selected = {}
+
+    if typeof(Value) == "string" then
+        Selected[Value] = true
+        return Selected
+    end
+
+    if typeof(Value) ~= "table" then
+        return Selected
+    end
+
+    -- Rayfield Gen2 multi-select may provide either an array of strings
+    -- or a dictionary-like table. Support both formats.
+    for Key, Entry in pairs(Value) do
+        if typeof(Key) == "number" and typeof(Entry) == "string" then
+            Selected[Entry] = true
+
+        elseif typeof(Key) == "string" then
+            if Entry == true then
+                Selected[Key] = true
+
+            elseif typeof(Entry) == "string" then
+                Selected[Entry] = true
+            end
+        end
+    end
+
+    return Selected
+end
+
+
+local function GetSelectedLuckList()
+    local Result = {}
+
+    for _, Luck in ipairs(LuckOptions) do
+        if Settings.SelectedLucks[Luck] then
+            table.insert(Result, Luck)
+        end
+    end
+
+    return Result
+end
+
+
+local function GetSelectedLuckText()
+    local Selected = GetSelectedLuckList()
+
+    if #Selected == 0 then
+        return "None"
+    end
+
+    return table.concat(Selected, ", ")
+end
+
+
+local function IsLuckSelected(LuckText)
+    local Clean = CleanLuck(LuckText)
+
+    for Luck, Enabled in pairs(Settings.SelectedLucks) do
+        if Enabled and CleanLuck(Luck) == Clean then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+local function GetEggLuck(Egg)
+    if not Egg then
+        return nil
+    end
+
+    for _, Object in ipairs(Egg:GetDescendants()) do
+        if Object.Name == "Luck"
+            and (
+                Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
+            )
+        then
+            if Object.Text and Object.Text ~= "" then
+                return CleanLuck(Object.Text)
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetPickupPrompt(Egg)
+    if not Egg then
+        return nil
+    end
+
+    for _, Object in ipairs(Egg:GetDescendants()) do
+        if Object:IsA("ProximityPrompt")
+            and Object.Name == "Pickup"
+        then
+            return Object
+        end
+    end
+
+    return nil
+end
+
+local function GetEggTarget(Egg, Prompt)
+    if Prompt
+        and Prompt.Parent
+        and Prompt.Parent:IsA("BasePart")
+    then
+        return Prompt.Parent
+    end
+
+    if Egg:IsA("BasePart") then
+        return Egg
+    end
+
+    if Egg:IsA("Model") and Egg.PrimaryPart then
+        return Egg.PrimaryPart
+    end
+
+    local PreferredNames = {
+        "Cube.001",
+        "Sphere.004",
+        "EggBase",
+        "Handle",
+    }
+
+    for _, Name in ipairs(PreferredNames) do
+        local Part = Egg:FindFirstChild(Name, true)
+
+        if Part and Part:IsA("BasePart") then
+            return Part
+        end
+    end
+
+    return Egg:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function FindEggByLuck(WantedLuck)
+    SearchCount += 1
+
+    local Wanted = CleanLuck(WantedLuck)
+
+    for _, Egg in ipairs(RenderedEggs:GetChildren()) do
+        local EggLuck = GetEggLuck(Egg)
+
+        if EggLuck == Wanted then
+            local Prompt = GetPickupPrompt(Egg)
+
+            if Prompt and Prompt.Enabled then
+                return Egg, Prompt
+            end
+        end
+    end
+
+    return nil
+end
+
+local function FindEggBySelectedLucks()
+    SearchCount += 1
+
+    for _, Egg in ipairs(RenderedEggs:GetChildren()) do
+        local EggLuck = GetEggLuck(Egg)
+
+        if EggLuck and IsLuckSelected(EggLuck) then
+            local Prompt = GetPickupPrompt(Egg)
+
+            if Prompt and Prompt.Enabled then
+                -- Return the dropdown label that matched this egg.
+                for _, Luck in ipairs(LuckOptions) do
+                    if Settings.SelectedLucks[Luck]
+                        and CleanLuck(Luck) == EggLuck
+                    then
+                        return Egg, Prompt, Luck
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function GetMatchingSelectedEggs()
+    local Results = {}
+
+    for _, Egg in ipairs(RenderedEggs:GetChildren()) do
+        local EggLuck = GetEggLuck(Egg)
+
+        if EggLuck and IsLuckSelected(EggLuck) then
+            local Prompt = GetPickupPrompt(Egg)
+
+            if Prompt then
+                table.insert(Results, {
+                    Egg = Egg,
+                    Prompt = Prompt,
+                    Luck = EggLuck,
+                })
+            end
+        end
+    end
+
+    return Results
+end
+
+
+local function GetMatchingEggs(WantedLuck)
+    local Results = {}
+    local Wanted = CleanLuck(WantedLuck)
+
+    for _, Egg in ipairs(RenderedEggs:GetChildren()) do
+        if GetEggLuck(Egg) == Wanted then
+            local Prompt = GetPickupPrompt(Egg)
+
+            if Prompt then
+                table.insert(Results, {
+                    Egg = Egg,
+                    Prompt = Prompt,
+                })
+            end
+        end
+    end
+
+    return Results
+end
+
+--// ============================================================
+--// NEST / AUTO PLACE
+--// ============================================================
+
+local function GetOwnNests()
+    local Plot = GetPlayerPlot()
+
+    if not Plot then
+        return nil
+    end
+
+    return Plot:FindFirstChild("Nests")
+end
+
+
+local function GetFreeNest()
+    local Nests = GetOwnNests()
+
+    if not Nests then
+        return nil
+    end
+
+    local Candidates = {}
+
+    for _, Nest in ipairs(Nests:GetChildren()) do
+        local Unlocked = Nest:GetAttribute("Unlocked")
+        local Occupied = Nest:GetAttribute("Occupied")
+
+        if Unlocked == true and Occupied ~= true then
+            table.insert(Candidates, Nest)
+        end
+    end
+
+    table.sort(Candidates, function(A, B)
+        local AN = tonumber(A.Name)
+        local BN = tonumber(B.Name)
+
+        if AN and BN then
+            return AN < BN
+        end
+
+        return A.Name < B.Name
+    end)
+
+    return Candidates[1]
+end
+
+
+local function IsEggTool(Tool)
+    return Tool
+        and Tool:IsA("Tool")
+        and Tool:HasTag("Egg")
+end
+
+
+local function GetBackpackEggNames()
+    local Seen = {}
+    local Names = {}
+
+    -- Include equipped egg too, so the dropdown does not lose it
+    -- while placement is in progress.
+    local Character = LocalPlayer.Character
+
+    local function AddFrom(Container)
+        if not Container then
+            return
+        end
+
+        for _, Child in ipairs(Container:GetChildren()) do
+            if IsEggTool(Child) and not Seen[Child.Name] then
+                Seen[Child.Name] = true
+                table.insert(Names, Child.Name)
+            end
+        end
+    end
+
+    AddFrom(Backpack)
+    AddFrom(Character)
+
+    table.sort(Names)
+
+    return Names
+end
+
+
+local function NormalizeNameSelection(Value)
+    local Selected = {}
+
+    if typeof(Value) == "string" then
+        Selected[Value] = true
+        return Selected
+    end
+
+    if typeof(Value) ~= "table" then
+        return Selected
+    end
+
+    for Key, Entry in pairs(Value) do
+        if typeof(Key) == "number" and typeof(Entry) == "string" then
+            Selected[Entry] = true
+
+        elseif typeof(Key) == "string" then
+            if Entry == true then
+                Selected[Key] = true
+
+            elseif typeof(Entry) == "string" then
+                Selected[Entry] = true
+            end
+        end
+    end
+
+    return Selected
+end
+
+
+local function GetSelectedNameText(Selection)
+    local Names = {}
+
+    for Name, Enabled in pairs(Selection) do
+        if Enabled then
+            table.insert(Names, Name)
+        end
+    end
+
+    table.sort(Names)
+
+    if #Names == 0 then
+        return "None"
+    end
+
+    return table.concat(Names, ", ")
+end
+
+
+local function FindSelectedEggTool(Selection)
+    local Character = LocalPlayer.Character
+
+    -- Prefer an already equipped selected egg.
+    if Character then
+        for _, Child in ipairs(Character:GetChildren()) do
+            if IsEggTool(Child) and Selection[Child.Name] then
+                return Child
+            end
+        end
+    end
+
+    -- Otherwise pick the first selected egg in the Backpack.
+    for _, Child in ipairs(Backpack:GetChildren()) do
+        if IsEggTool(Child) and Selection[Child.Name] then
+            return Child
+        end
+    end
+
+    return nil
+end
+
+
+local function EquipSelectedEggTool(Selection)
+    local Character = GetCharacter()
+    local Humanoid =
+        Character and Character:FindFirstChildOfClass("Humanoid")
+
+    local Tool =
+        FindSelectedEggTool(Selection)
+
+    if not Humanoid or not Tool then
+        return nil
+    end
+
+    if Tool.Parent ~= Character then
+        pcall(function()
+            Humanoid:EquipTool(Tool)
+        end)
+
+        task.wait(0.08)
+    end
+
+    if Tool.Parent == Character then
+        return Tool
+    end
+
+    return nil
+end
+
+
+local function AutoPlaceOneEgg(Force)
+    if not Force and not Settings.AutoPlaceEgg then
+        return false, "Auto Place Egg is disabled."
+    end
+
+    local Nest = GetFreeNest()
+
+    if not Nest then
+        return false, "No unlocked empty nest was found."
+    end
+
+    if next(Settings.SelectedPlaceEggs) == nil then
+        return false, "No backpack egg types are selected."
+    end
+
+    local Tool =
+        EquipSelectedEggTool(
+            Settings.SelectedPlaceEggs
+        )
+
+    if not Tool then
+        return false, "No selected egg Tool is currently in your Backpack."
+    end
+
+    local ToolName = Tool.Name
+
+    Log(
+        "Placing "
+            .. tostring(ToolName)
+            .. " into nest "
+            .. tostring(Nest.Name)
+    )
+
+    local Success, ErrorMessage = pcall(function()
+        EggPlacedEvent:FireServer({
+            NestId = Nest.Name
+        })
+    end)
+
+    if not Success then
+        return false, tostring(ErrorMessage)
+    end
+
+    local Started = os.clock()
+
+    while os.clock() - Started < 2 do
+        if Nest:GetAttribute("Occupied") == true then
+            Log(
+                tostring(ToolName)
+                    .. " placed in nest "
+                    .. tostring(Nest.Name)
+            )
+
+            return true, Nest.Name, ToolName
+        end
+
+        task.wait(0.05)
+    end
+
+    -- The remote was sent even if the client attribute has not refreshed yet.
+    return true, Nest.Name, ToolName
+end
+
+
+--// ============================================================
+--// PLACED EGGS / AUTO HATCH
+--// ============================================================
+
+local function GetOwnPlacedEggFolder()
+    local Plot = GetPlayerPlot()
+
+    if not Plot then
+        return nil
+    end
+
+    return Plot:FindFirstChild("Eggs")
+end
+
+
+local function GetPlacedEggNames()
+    local Folder = GetOwnPlacedEggFolder()
+    local Seen = {}
+    local Names = {}
+
+    if not Folder then
+        return Names
+    end
+
+    for _, Egg in ipairs(Folder:GetChildren()) do
+        if Egg:GetAttribute("EggKey") and not Seen[Egg.Name] then
+            Seen[Egg.Name] = true
+            table.insert(Names, Egg.Name)
+        end
+    end
+
+    table.sort(Names)
+
+    return Names
+end
+
+
+local function FindHatchPrompt(Egg)
+    if not Egg then
+        return nil
+    end
+
+    for _, Object in ipairs(Egg:GetDescendants()) do
+        if Object:IsA("ProximityPrompt")
+            and Object.Name == "Hatch"
+        then
+            return Object
+        end
+    end
+
+    return nil
+end
+
+
+local function FindReadyHatchEgg()
+    local Folder = GetOwnPlacedEggFolder()
+
+    if not Folder then
+        return nil
+    end
+
+    for _, Egg in ipairs(Folder:GetChildren()) do
+        local EggKey =
+            Egg:GetAttribute("EggKey")
+
+        if EggKey
+            and not Egg:HasTag("Hatching")
+        then
+            local Prompt =
+                FindHatchPrompt(Egg)
+
+            -- Hatch any egg whose normal Hatch prompt is ready.
+            if Prompt and Prompt.Enabled then
+                return Egg, Prompt
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function HatchOneReadyEgg()
+    if not Settings.AutoHatch then
+        return false, "Auto Hatch is disabled."
+    end
+
+    local Egg, Prompt =
+        FindReadyHatchEgg()
+
+    if not Egg then
+        return false, "No egg is ready to hatch."
+    end
+
+    local EggKey =
+        Egg:GetAttribute("EggKey")
+
+    if not EggKey then
+        return false, "Selected egg has no EggKey."
+    end
+
+    Egg:AddTag("Hatching")
+    Prompt.Enabled = false
+
+    Log(
+        "Hatching "
+            .. tostring(Egg.Name)
+            .. " | "
+            .. tostring(EggKey)
+    )
+
+    local Success, ErrorMessage =
+        pcall(function()
+            HatchEvent:FireServer({
+                EggKey = EggKey
+            })
+        end)
+
+    if not Success then
+        pcall(function()
+            Egg:RemoveTag("Hatching")
+        end)
+
+        if Prompt.Parent then
+            Prompt.Enabled = true
+        end
+
+        return false, tostring(ErrorMessage)
+    end
+
+    -- If the server does not remove/update the egg, re-arm it later.
+    task.delay(4, function()
+        if Egg and Egg.Parent and Egg:HasTag("Hatching") then
+            pcall(function()
+                Egg:RemoveTag("Hatching")
+            end)
+
+            local CurrentPrompt =
+                FindHatchPrompt(Egg)
+
+            if CurrentPrompt then
+                CurrentPrompt.Enabled = true
+            end
+        end
+    end)
+
+    return true, Egg.Name
+end
+
+
+--// ============================================================
+--// EGG MOVEMENT
+--// ============================================================
+
+local function TweenToEgg(WantedLuck)
+    local Egg, Prompt = FindEggByLuck(WantedLuck)
+
+    if not Egg then
+        return false, "No " .. tostring(WantedLuck) .. " egg is currently rendered."
+    end
+
+    local Target = GetEggTarget(Egg, Prompt)
+
+    if not Target then
+        return false, "Egg found, but no usable BasePart was found."
+    end
+
+    Log("Tweening to " .. tostring(WantedLuck) .. " egg")
+
+    local Success = TweenToCFrame(
+        Target.CFrame * CFrame.new(
+            0,
+            Settings.EggOffsetY,
+            Settings.EggOffsetZ
+        ),
+        function()
+            -- Manual "Tween To Egg" still works when Auto Pickup is off.
+            -- During an auto-pickup sequence, turning Auto Pickup off
+            -- cancels this movement immediately.
+            return (not IsPickingUp) or Settings.AutoPickup
+        end
+    )
+
+    if not Success then
+        return false, "Tween to egg was interrupted."
+    end
+
+    return true, Egg, Prompt
+end
+
+local function TweenToSelectedEgg()
+    local Egg, Prompt, MatchedLuck = FindEggBySelectedLucks()
+
+    if not Egg then
+        return false, "None of the selected luck eggs are currently rendered."
+    end
+
+    local Target = GetEggTarget(Egg, Prompt)
+
+    if not Target then
+        return false, "Egg found, but no usable BasePart was found."
+    end
+
+    Log("Tweening to " .. tostring(MatchedLuck) .. " egg")
+
+    local Success = TweenToCFrame(
+        Target.CFrame * CFrame.new(
+            0,
+            Settings.EggOffsetY,
+            Settings.EggOffsetZ
+        ),
+        function()
+            return (not IsPickingUp) or Settings.AutoPickup
+        end
+    )
+
+    if not Success then
+        return false, "Tween to egg was interrupted."
+    end
+
+    return true, Egg, Prompt, MatchedLuck
+end
+
+
+--// ============================================================
+--// PICKUP
+--// ============================================================
+
+local function ActivatePickup(Prompt)
+    if not Prompt then
+        return false
+    end
+
+    if typeof(fireproximityprompt) == "function" then
+        return pcall(function()
+            fireproximityprompt(Prompt)
+        end)
+    end
+
+    return false
+end
+
+local function WaitForPickup(Egg, Timeout)
+    Timeout = Timeout or 2
+
+    local Started = os.clock()
+
+    while os.clock() - Started < Timeout do
+        if not Egg or not Egg.Parent then
+            return true
+        end
+
+        task.wait(0.05)
+    end
+
+    return false
+end
+
+local function PickupEgg(WantedLuck, ShowNotification)
+    if IsPickingUp then
+        return false, "Already handling an egg."
+    end
+
+    IsPickingUp = true
+
+    local Success, EggOrMessage, Prompt = TweenToEgg(WantedLuck)
+
+    if not Success then
+        IsPickingUp = false
+        return false, EggOrMessage
+    end
+
+    local Egg = EggOrMessage
+
+    -- If Auto Pickup was turned off while moving, stop the sequence.
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    task.wait(Settings.PickupSettleDelay)
+
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    local Activated = ActivatePickup(Prompt)
+
+    if not Activated then
+        IsPickingUp = false
+        return false, "Pickup prompt could not be activated."
+    end
+
+    WaitForPickup(Egg, 2)
+
+    PickupCount += 1
+
+    Log("Picked up " .. tostring(WantedLuck))
+
+    task.wait(Settings.ReturnDelay)
+
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    local Returned, ReturnMessage = TweenToPlot()
+
+    if ShowNotification then
+        if Returned then
+            Toast(
+                "Egg Picked Up",
+                tostring(WantedLuck) .. " • Returned to plot"
+            )
+        else
+            Notify(
+                "Return Failed",
+                ReturnMessage,
+                4
+            )
+        end
+    end
+
+    IsPickingUp = false
+
+    return true
+end
+
+local function PickupSelectedEgg(ShowNotification)
+    if IsPickingUp then
+        return false, "Already handling an egg."
+    end
+
+    IsPickingUp = true
+
+    local Success, EggOrMessage, Prompt, MatchedLuck =
+        TweenToSelectedEgg()
+
+    if not Success then
+        IsPickingUp = false
+        return false, EggOrMessage
+    end
+
+    local Egg = EggOrMessage
+
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    task.wait(Settings.PickupSettleDelay)
+
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    local Activated = ActivatePickup(Prompt)
+
+    if not Activated then
+        IsPickingUp = false
+        return false, "Pickup prompt could not be activated."
+    end
+
+    WaitForPickup(Egg, 2)
+    PickupCount += 1
+
+    Log("Picked up " .. tostring(MatchedLuck))
+
+    task.wait(Settings.ReturnDelay)
+
+    if not Settings.AutoPickup and not ShowNotification then
+        IsPickingUp = false
+        return false, "Auto Pickup was disabled."
+    end
+
+    local Returned, ReturnMessage = TweenToPlot()
+
+    if ShowNotification then
+        if Returned then
+            Toast(
+                "Egg Picked Up",
+                tostring(MatchedLuck) .. " • Returned to plot"
+            )
+        else
+            Notify(
+                "Return Failed",
+                ReturnMessage,
+                4
+            )
+        end
+    end
+
+    IsPickingUp = false
+    return true
+end
+
+--// ============================================================
+--// AUTO PICKUP
+--// ============================================================
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoPickup
+            and not IsPickingUp
+        then
+            local Egg = FindEggBySelectedLucks()
+
+            if Egg then
+                PickupSelectedEgg(false)
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(Settings.SearchDelay) or 0.25,
+                0.05
+            )
+        )
+    end
+end)
+
+--// ============================================================
+--// INDEPENDENT AUTO PLACE
+--// ============================================================
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoPlaceEgg then
+            local Nest = GetFreeNest()
+            local Tool =
+                FindSelectedEggTool(
+                    Settings.SelectedPlaceEggs
+                )
+
+            if Nest and Tool then
+                local Success, Message =
+                    AutoPlaceOneEgg(false)
+
+                if not Success then
+                    Log(
+                        "Auto Place waiting: "
+                            .. tostring(Message)
+                    )
+                end
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(Settings.AutoPlaceDelay) or 0.20,
+                0.05
+            )
+        )
+    end
+end)
+
+
+--// ============================================================
+--// AUTO HATCH
+--// ============================================================
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoHatch then
+            local Egg =
+                FindReadyHatchEgg()
+
+            if Egg then
+                local Success, Message =
+                    HatchOneReadyEgg()
+
+                if not Success then
+                    Log(
+                        "Auto Hatch waiting: "
+                            .. tostring(Message)
+                    )
+                end
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(Settings.AutoHatchDelay) or 0.20,
+                0.05
+            )
+        )
+    end
+end)
+
+
+--// ============================================================
+--// AUTO HATCH LUCK UPGRADE
+--// ============================================================
+
+local HatchLuckUpgradeBusy = false
+
+
+local function GetHatchLuckUpgradeState()
+    local SavedData =
+        LocalPlayer:FindFirstChild("SavedData")
+
+    if not SavedData then
+        return nil, "SavedData not found."
+    end
+
+    local HatchUpgrades =
+        SavedData:FindFirstChild("HatchUpgrades")
+
+    local Cash =
+        SavedData:FindFirstChild("Cash")
+
+    if not HatchUpgrades or not Cash then
+        return nil, "HatchUpgrades or Cash not found."
+    end
+
+    local UsedFreeHatchUpgrades =
+        SavedData:FindFirstChild("UsedFreeHatchUpgrades")
+
+    local FreeHatchUpgrades =
+        SavedData:FindFirstChild("FreeHatchUpgrades")
+
+    local UpgradeValue =
+        tonumber(HatchUpgrades.Value) or 0
+
+    local UsedFree =
+        UsedFreeHatchUpgrades
+        and (tonumber(UsedFreeHatchUpgrades.Value) or 0)
+        or 0
+
+    local FreeCount =
+        FreeHatchUpgrades
+        and (tonumber(FreeHatchUpgrades.Value) or 0)
+        or 0
+
+    local CashValue =
+        tonumber(Cash.Value) or 0
+
+    local PaidUpgrades =
+        HatchLuck.GetPaidUpgrades(
+            UpgradeValue,
+            UsedFree
+        )
+
+    local Price =
+        HatchLuck.GetPrice(PaidUpgrades)
+
+    return {
+        SavedData = SavedData,
+        HatchUpgrades = HatchUpgrades,
+        Cash = Cash,
+        UpgradeValue = UpgradeValue,
+        UsedFree = UsedFree,
+        FreeCount = FreeCount,
+        CashValue = CashValue,
+        PaidUpgrades = PaidUpgrades,
+        Price = tonumber(Price),
+    }
+end
+
+
+local function TryHatchLuckUpgrade()
+    if HatchLuckUpgradeBusy then
+        return false, "Busy"
+    end
+
+    if not Settings.AutoHatchLuckUpgrade then
+        return false, "Disabled"
+    end
+
+    -- The game's own BuyOne handler refuses upgrades while this
+    -- setting is explicitly false, so pause automation too.
+    if LocalPlayer:GetAttribute("Setting_LuckMultiplier") == false then
+        return false, "Luck Multiplier setting is disabled."
+    end
+
+    local State, ErrorMessage =
+        GetHatchLuckUpgradeState()
+
+    if not State then
+        return false, ErrorMessage
+    end
+
+    local IsFree =
+        State.FreeCount > 0
+
+    local IsAffordable =
+        IsFree
+        or (
+            State.Price ~= nil
+            and State.CashValue >= State.Price
+        )
+
+    if not IsAffordable then
+        return false, "Not enough cash."
+    end
+
+    HatchLuckUpgradeBusy = true
+
+    local BeforeValue =
+        State.UpgradeValue
+
+    local Success, FireError =
+        pcall(function()
+            -- Buy exactly one upgrade, matching the normal Purchase button.
+            HatchLuckUpgradeEvent:FireServer()
+        end)
+
+    if not Success then
+        HatchLuckUpgradeBusy = false
+        return false, tostring(FireError)
+    end
+
+    Log(
+        "Hatch Luck upgrade requested"
+            .. (
+                IsFree
+                and " • FREE"
+                or (
+                    " • Cost "
+                    .. tostring(State.Price)
+                )
+            )
+    )
+
+    -- Wait briefly for the server to update HatchUpgrades.
+    -- This prevents firing the purchase remote repeatedly before
+    -- the previous purchase has been processed.
+    local Timeout =
+        os.clock() + 1.5
+
+    while HubRunning
+        and Settings.AutoHatchLuckUpgrade
+        and os.clock() < Timeout
+    do
+        if not State.HatchUpgrades.Parent then
+            break
+        end
+
+        if tonumber(State.HatchUpgrades.Value) ~= BeforeValue then
+            Log(
+                "Hatch Luck upgraded to level "
+                    .. tostring(
+                        State.HatchUpgrades.Value
+                    )
+            )
+            break
+        end
+
+        task.wait(0.05)
+    end
+
+    HatchLuckUpgradeBusy = false
+    return true
+end
+
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoHatchLuckUpgrade
+            and not HatchLuckUpgradeBusy
+        then
+            local Success, Result =
+                pcall(TryHatchLuckUpgrade)
+
+            if not Success then
+                HatchLuckUpgradeBusy = false
+                Log(
+                    "Auto Hatch Luck Upgrade error: "
+                        .. tostring(Result)
+                )
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(
+                    Settings.HatchLuckUpgradeDelay
+                ) or 0.35,
+                0.10
+            )
+        )
+    end
+end)
+
+
+--// ============================================================
+--// AUTO FEED BEST PETS
+--// ============================================================
+
+local AutoFeedBestPetsBusy = false
+local BestPetsBusy = false
+local CollectOwnedPets
+
+
+local function GetSelectedPetFoodList()
+    local Result = {}
+
+    for _, FoodName in ipairs(PetFoodOptions) do
+        if Settings.SelectedPetFoods[FoodName] then
+            table.insert(Result, FoodName)
+        end
+    end
+
+    return Result
+end
+
+
+local function GetSelectedPetFoodText()
+    local Foods = GetSelectedPetFoodList()
+
+    if #Foods == 0 then
+        return "None"
+    end
+
+    return table.concat(Foods, ", ")
+end
+
+
+local function FindFoodTool(FoodName)
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(Container:GetChildren()) do
+                if Child:IsA("Tool")
+                    and Child:HasTag("Food")
+                    and Child.Name == FoodName
+                then
+                    return Child
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function EquipFoodTool(FoodName)
+    local Character = GetCharacter()
+    local Humanoid =
+        Character
+        and Character:FindFirstChildOfClass("Humanoid")
+
+    local Tool = FindFoodTool(FoodName)
+
+    if not Humanoid or not Tool then
+        return nil
+    end
+
+    if Tool.Parent ~= Character then
+        pcall(function()
+            Humanoid:EquipTool(Tool)
+        end)
+
+        local Timeout = os.clock() + 1.5
+
+        while Tool.Parent ~= Character
+            and os.clock() < Timeout
+        do
+            task.wait()
+        end
+    end
+
+    if Tool.Parent == Character then
+        return Tool
+    end
+
+    return nil
+end
+
+
+local function GetBestPetKeys()
+    if not CollectOwnedPets then
+        return {}
+    end
+
+    local Owned = CollectOwnedPets()
+
+    local MaxPets =
+        tonumber(
+            LocalPlayer:GetAttribute("MaxPets")
+        ) or 5
+
+    local Keys = {}
+
+    for Index = 1, math.min(MaxPets, #Owned) do
+        local Pet = Owned[Index]
+
+        if Pet and Pet.Key then
+            table.insert(Keys, Pet.Key)
+        end
+    end
+
+    return Keys
+end
+
+
+local function FeedBestPetsOnce()
+    if AutoFeedBestPetsBusy then
+        return false, "Busy"
+    end
+
+    if not Settings.AutoFeedBestPets then
+        return false, "Disabled"
+    end
+
+    local SelectedFoods =
+        GetSelectedPetFoodList()
+
+    if #SelectedFoods == 0 then
+        return false, "No food selected."
+    end
+
+    local BestPetKeys =
+        GetBestPetKeys()
+
+    if #BestPetKeys == 0 then
+        return false, "No pets found."
+    end
+
+    -- Make sure at least one selected food exists before starting.
+    local HasAvailableFood = false
+
+    for _, FoodName in ipairs(SelectedFoods) do
+        if FindFoodTool(FoodName) then
+            HasAvailableFood = true
+            break
+        end
+    end
+
+    if not HasAvailableFood then
+        return false,
+            "None of the selected foods are available."
+    end
+
+    AutoFeedBestPetsBusy = true
+
+    local FeedCalls = 0
+    local FoodsUsed = {}
+
+    for _, PetKey in ipairs(BestPetKeys) do
+        if not HubRunning
+            or not Settings.AutoFeedBestPets
+        then
+            break
+        end
+
+        for _, FoodName in ipairs(SelectedFoods) do
+            if not HubRunning
+                or not Settings.AutoFeedBestPets
+            then
+                break
+            end
+
+            local FoodTool =
+                FindFoodTool(FoodName)
+
+            if FoodTool then
+                -- Keep the selected food equipped to match the
+                -- game's normal feeding flow.
+                local EquippedTool =
+                    EquipFoodTool(FoodName)
+
+                if EquippedTool then
+                    local Success, ErrorMessage =
+                        pcall(function()
+                            FeedPetEvent:FireServer(
+                                PetKey,
+                                FoodName,
+                                true
+                            )
+                        end)
+
+                    if Success then
+                        FeedCalls += 1
+                        FoodsUsed[FoodName] = true
+                    else
+                        Log(
+                            "FeedPet failed for "
+                                .. tostring(PetKey)
+                                .. " with "
+                                .. tostring(FoodName)
+                                .. ": "
+                                .. tostring(ErrorMessage)
+                        )
+                    end
+
+                    task.wait(0.12)
+                end
+            end
+        end
+    end
+
+    AutoFeedBestPetsBusy = false
+
+    local UsedList = {}
+
+    for _, FoodName in ipairs(PetFoodOptions) do
+        if FoodsUsed[FoodName] then
+            table.insert(UsedList, FoodName)
+        end
+    end
+
+    Log(
+        "Auto Feed Best Pets • "
+            .. tostring(FeedCalls)
+            .. " feed call(s) • "
+            .. (
+                #UsedList > 0
+                and table.concat(UsedList, ", ")
+                or "No selected food available"
+            )
+    )
+
+    return true, FeedCalls
+end
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoFeedBestPets
+            and not AutoFeedBestPetsBusy
+            and not BestPetsBusy
+        then
+            local Success, Result =
+                pcall(FeedBestPetsOnce)
+
+            if not Success then
+                AutoFeedBestPetsBusy = false
+
+                Log(
+                    "Auto Feed Best Pets error: "
+                        .. tostring(Result)
+                )
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(
+                    Settings.AutoFeedBestPetsDelay
+                ) or 2,
+                0.5
+            )
+        )
+    end
+end)
+
+
+--// ============================================================
+--// AUTO SELL PETS
+--// ============================================================
+
+local AutoSellBusy = false
+
+
+local function GetSellNPC()
+    local Stalls =
+        Workspace:FindFirstChild("Stalls")
+
+    local Sell =
+        Stalls and Stalls:FindFirstChild("Sell")
+
+    return Sell and Sell:FindFirstChild("Richie")
+end
+
+
+local function CountPetTools()
+    local Count = 0
+
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(
+                Container:GetChildren()
+            ) do
+                if Child:IsA("Tool")
+                    and Child:HasTag("Pet")
+                    and Child:GetAttribute("PetKey")
+                then
+                    Count += 1
+                end
+            end
+        end
+    end
+
+    return Count
+end
+
+
+local function SellPetsOnce()
+    if AutoSellBusy then
+        return false, "Busy"
+    end
+
+    if not Settings.AutoSellPets then
+        return false, "Disabled"
+    end
+
+    -- This function is no longer called on a timer.
+    -- It runs only after the Best Pets routine has finished
+    -- equipping/placing the current best pets.
+    local PetCount =
+        CountPetTools()
+
+    if PetCount <= 0 then
+        return false, "No pet tools to sell."
+    end
+
+    local Richie =
+        GetSellNPC()
+
+    if not Richie then
+        return false, "Richie sell NPC not found."
+    end
+
+    AutoSellBusy = true
+
+    local Success, ErrorMessage =
+        pcall(function()
+            DialogueSelectEvent:FireServer(
+                Richie,
+                "I would like to sell my pets"
+            )
+        end)
+
+    if Success then
+        Log(
+            "Auto Sell Pets requested • "
+                .. tostring(PetCount)
+                .. " pet tool(s) detected"
+        )
+    else
+        Log(
+            "Auto Sell Pets error: "
+                .. tostring(ErrorMessage)
+        )
+    end
+
+    task.wait(0.35)
+
+    AutoSellBusy = false
+
+    return Success,
+        Success and PetCount or tostring(ErrorMessage)
+end
+
+
+--// ============================================================
+--// BEST PETS
+--// ============================================================
+
+local function PetIncomeOf(PetToolOrModel)
+    if not PetToolOrModel then
+        return 0
+    end
+
+    local PetName =
+        PetToolOrModel:GetAttribute("PetName")
+        or PetToolOrModel.Name
+
+    local Data =
+        PetsData[PetName]
+
+    local BaseIncome =
+        Data and tonumber(Data.Income) or 0
+
+    if BaseIncome <= 0 then
+        return 0
+    end
+
+    local Weight =
+        tonumber(
+            PetToolOrModel:GetAttribute("Weight")
+        ) or 1
+
+    local MutationFactor =
+        Mutations.CombinedFactor(
+            PetToolOrModel:GetAttribute("Mutation"),
+            PetToolOrModel:GetAttribute("SpawnMutation")
+        )
+
+    local Income =
+        math.floor(
+            BaseIncome
+            * (
+                Weight
+                / PetAging.WeightStandardKG
+            )
+        )
+        * MutationFactor
+
+    return math.floor(Income)
+end
+
+
+local function FindPetTool(PetKey)
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(
+                Container:GetChildren()
+            ) do
+                if Child:IsA("Tool")
+                    and Child:GetAttribute("PetKey") == PetKey
+                then
+                    return Child
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+
+CollectOwnedPets = function()
+    local Result = {}
+
+    -- Already placed pets.
+    local Success, AllRendered =
+        pcall(function()
+            return PetRenderer.GetAll()
+        end)
+
+    if Success and AllRendered then
+        for _, PetInfo in pairs(AllRendered) do
+            if PetInfo.OwnerUserId == LocalPlayer.UserId
+                and PetInfo.Model
+                and PetInfo.Model.Parent
+            then
+                table.insert(
+                    Result,
+                    {
+                        Placed = true,
+                        Key = PetInfo.PetKey,
+                        Income =
+                            tonumber(PetInfo.DisplayIncome)
+                            or 0,
+                        Position =
+                            PetInfo.Model:GetPivot().Position,
+                    }
+                )
+            end
+        end
+    end
+
+    -- Pets in character / backpack.
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(
+                Container:GetChildren()
+            ) do
+                if Child:IsA("Tool")
+                    and Child:HasTag("Pet")
+                    and Child:GetAttribute("PetKey")
+                then
+                    table.insert(
+                        Result,
+                        {
+                            Placed = false,
+                            Key =
+                                Child:GetAttribute("PetKey"),
+                            Income =
+                                PetIncomeOf(Child),
+                            Tool = Child,
+                        }
+                    )
+                end
+            end
+        end
+    end
+
+    table.sort(
+        Result,
+        function(A, B)
+            return A.Income > B.Income
+        end
+    )
+
+    return Result
+end
+
+
+local function GetPetPlacementPosition(
+    Root,
+    Index
+)
+    local Row =
+        math.floor(
+            (Index - 1) / 3
+        )
+
+    local Forward =
+        Row * 4 + 8
+
+    local Position =
+        (
+            Root.CFrame
+            * CFrame.new(
+                (
+                    (Index - 1) % 3
+                    - 1
+                ) * 4,
+                0,
+                -Forward
+            )
+        ).Position
+
+    local Plot =
+        GeneralService:GetPlot(
+            LocalPlayer
+        )
+
+    local Baseplate =
+        Plot
+        and Plot:FindFirstChild(
+            "Baseplate"
+        )
+
+    if not Baseplate then
+        return Position
+    end
+
+    local LocalPosition =
+        Baseplate.CFrame:PointToObjectSpace(
+            Position
+        )
+
+    local XLimit =
+        Baseplate.Size.X / 2 - 2
+
+    local ZLimit =
+        Baseplate.Size.Z / 2 - 2
+
+    return Baseplate.CFrame:PointToWorldSpace(
+        Vector3.new(
+            math.clamp(
+                LocalPosition.X,
+                -XLimit,
+                XLimit
+            ),
+            LocalPosition.Y,
+            math.clamp(
+                LocalPosition.Z,
+                -ZLimit,
+                ZLimit
+            )
+        )
     )
 end
 
 
-local function TeleportToCFrame(
-    Target
+local function PlaceBestPetsOnce(
+    ShowNotification
 )
+    if BestPetsBusy then
+        return false, "Best-pet placement is already running."
+    end
+
+    BestPetsBusy = true
 
     local Character =
-        GetCharacter()
+        LocalPlayer.Character
 
+    local Humanoid =
+        Character
+        and Character:FindFirstChildOfClass(
+            "Humanoid"
+        )
 
     local Root =
         Character
@@ -581,3206 +2462,281 @@ local function TeleportToCFrame(
             "HumanoidRootPart"
         )
 
-
-    if not Root then
-        return false
+    if not Humanoid
+        or not Root
+        or Humanoid.Health <= 0
+    then
+        BestPetsBusy = false
+        return false, "Character is not ready."
     end
 
-
-    Character:PivotTo(
-        Target
-    )
-
-
-    return true
-end
-
-
---// ============================================================
---// BASE
---// ============================================================
-
-local function GetBaseArea()
-
-    return Workspace
-        :WaitForChild("PlayerEar")
-        :WaitForChild("2")
-        :WaitForChild(PLAYER_AREA_NAME)
-end
-
-
-local function GetHomeCFrame()
-
-    if HomeTarget:IsA(
-        "BasePart"
-    ) then
-
-        return HomeTarget.CFrame
-    end
-
-
-    if HomeTarget:IsA(
-        "Model"
-    ) then
-
-        return HomeTarget:GetPivot()
-    end
-
-
-    if HomeTarget:IsA(
-        "Attachment"
-    ) then
-
-        return HomeTarget.WorldCFrame
-    end
-
-
-    local Part =
-        HomeTarget:FindFirstChildWhichIsA(
-            "BasePart",
-            true
-        )
-
-
-    if Part then
-
-        return Part.CFrame
-    end
-
-
-    return nil
-end
-
-
-local function TeleportHome()
-
-    local Target =
-        GetHomeCFrame()
-
-
-    if not Target then
-
-        warn(
-            "[Auto Home] Home target missing"
-        )
-
-        return false
-    end
-
-
-    return TeleportToCFrame(
-
-        Target
-        * CFrame.new(
-            0,
-            3,
-            0
-        )
-    )
-end
-
-
---// ============================================================
---// AUTO WATER
---// ============================================================
-
-local AutoWaterLoopID = 0
-
-
-local function WaterOnce()
-
-    if not HubRunning then
-        return false
-    end
-
-    local Success = pcall(function()
-
-        WaterEvent:FireServer(
-            163
-        )
-
-    end)
-
-    return Success
-end
-
-
-local function StartAutoWater()
-
-    AutoWaterLoopID += 1
-
-    local ID =
-        AutoWaterLoopID
-
-    task.spawn(function()
-
-        while
-            HubRunning
-            and Settings.AutoWater
-            and ID == AutoWaterLoopID
-        do
-
-            -- Don't spam the water remote while the farm is returning
-            -- home, equipping, selling, or waiting for backpack space.
-            if
-                not BackpackSequenceBusy
-                and not FarmWaitingForBackpack
-            then
-
-                WaterOnce()
-
-            end
-
-            task.wait(
-                math.max(
-                    tonumber(Settings.WaterInterval) or 0.10,
-                    0.03
-                )
-            )
-
-        end
-
-    end)
-end
-
-
-local function StopAutoWater()
-
-    Settings.AutoWater =
-        false
-
-    AutoWaterLoopID += 1
-end
-
-
---// ============================================================
---// BEST FISH
---// ============================================================
-
-local function EquipBestFish()
-
-    local Success, Result =
-        pcall(function()
-
-            return BestFishEvent:InvokeServer()
-
-        end)
-
-
-    if not Success then
-
-        warn(
-            "[Best Fish]",
-            Result
-        )
-
-        return false
-    end
-
-
-    return true
-end
-
-
---// ============================================================
---// SELL LOCK
---// ============================================================
-
-local function ApplySellLockRarity()
-
-    local Rarity =
-        Settings.SellLockRarity
-        or "OFF"
-
-
-    local Success, Result =
-        pcall(function()
-
-            return SetSellLockRarityEvent:InvokeServer(
-                Rarity
-            )
-
-        end)
-
-
-    if not Success then
-
-        warn(
-            "[Sell Lock]",
-            Result
-        )
-
-
-        return false
-    end
-
-
-    print(
-        "[Sell Lock]",
-        Rarity
-    )
-
-
-    return true
-end
-
-
---// ============================================================
---// SELL ALL
---// ============================================================
-
-local function SellAllFish()
-
-    if not HubRunning then
-        return false
-    end
-
-
-    if not ApplySellLockRarity() then
-
-        warn(
-            "[Auto Sell] Lock failed. Sell cancelled."
-        )
-
-
-        return false
-    end
-
-
-    task.wait(0.05)
-
-
-    local Success, Result =
-        pcall(function()
-
-            return SellAllFishEvent:InvokeServer(
-                "OFF",
-                false
-            )
-
-        end)
-
-
-    if not Success then
-
-        warn(
-            "[Auto Sell]",
-            Result
-        )
-
-
-        return false
-    end
-
-
-    print(
-        "[Auto Sell] Completed"
-    )
-
-
-    return true
-end
-
-
---// ============================================================
---// BACKPACK
---// ============================================================
-
-local function GetBackpackNumbers()
-
-    return
-
+    local MaxPets =
         tonumber(
-            AmountValue.Value
-        ) or 0,
-
-        tonumber(
-            CapacityValue.Value
-        ) or 0
-end
-
-
-local function IsBackpackFull()
-
-    local Amount, Capacity =
-        GetBackpackNumbers()
-
-
-    return
-
-        Capacity > 0
-
-        and Amount >= Capacity
-end
-
-
---// ============================================================
---// AUTO HOME
---// ============================================================
-
-local CheckBackpack
-
-
-local function WaitForBackpackSpace(Timeout)
-
-    local Started =
-        os.clock()
-
-    while
-        HubRunning
-        and Settings.AutoHome
-        and os.clock() - Started < Timeout
-    do
-
-        local Amount, Capacity =
-            GetBackpackNumbers()
-
-        if
-            Capacity > 0
-            and Amount < Capacity
-        then
-
-            return true
-
-        end
-
-        task.wait(0.10)
-    end
-
-    return false
-end
-
-
-CheckBackpack = function()
-
-    if
-        not HubRunning
-        or not Settings.AutoHome
-    then
-
-        return
-    end
-
-
-    local Amount, Capacity =
-        GetBackpackNumbers()
-
-
-    if
-        Capacity <= 0
-        or Amount < Capacity
-    then
-
-        BackpackFullHandled =
-            false
-
-        return
-    end
-
-
-    if
-        BackpackSequenceBusy
-        or BackpackFullHandled
-    then
-
-        return
-    end
-
-
-    BackpackSequenceBusy =
-        true
-
-
-    task.spawn(function()
-
-        local Success =
-            false
-
-
-        for Attempt = 1, 3 do
-
-            if
-                not HubRunning
-                or not Settings.AutoHome
-            then
-
-                break
-            end
-
-
-            if TeleportHome() then
-
-                task.wait(
-                    Settings.TeleportDelay
-                )
-
-
-                if EquipBestFish() then
-
-                    task.wait(
-                        Settings.BestFishDelay
-                    )
-
-
-                    if Settings.AutoSellFish then
-
-                        local SellRequested =
-                            SellAllFish()
-
-                        if SellRequested then
-
-                            -- A successful InvokeServer call does not
-                            -- guarantee BackpackData has updated yet.
-                            -- Wait until we can confirm there is space.
-                            if WaitForBackpackSpace(
-                                Settings.BackpackResetTimeout
-                            ) then
-
-                                Success =
-                                    true
-
-                                break
-                            end
-
-                        end
-
-                    else
-
-                        -- Auto Home can still be used without Auto Sell.
-                        -- In that case stay home and wait for the user
-                        -- to manually create backpack space.
-                        Success =
-                            true
-
-                        break
-                    end
-
-                end
-
-            end
-
-
-            task.wait(0.50)
-
-        end
-
-
-        BackpackSequenceBusy =
-            false
-
-
-        -- Only keep the "handled" latch set if the backpack is
-        -- STILL full. If selling created space, immediately re-arm
-        -- the system for the next full backpack.
-        BackpackFullHandled =
-            Success and IsBackpackFull()
-
-
-        if
-            not Success
-            and HubRunning
-            and Settings.AutoHome
-            and IsBackpackFull()
-        then
-
-            task.delay(
-                0.75,
-                function()
-
-                    if
-                        HubRunning
-                        and Settings.AutoHome
-                        and IsBackpackFull()
-                    then
-
-                        BackpackFullHandled =
-                            false
-
-                        CheckBackpack()
-
-                    end
-
-                end
-            )
-
-        end
-
-    end)
-end
-
-
---// ============================================================
---// BACKPACK WATCHER
---// ============================================================
-
-local BackpackWatchID =
-    0
-
-
-local function StartBackpackWatcher()
-
-    BackpackWatchID += 1
-
-
-    local ID =
-        BackpackWatchID
-
-
-    task.spawn(function()
-
-        while
-            HubRunning
-            and Settings.AutoHome
-            and ID == BackpackWatchID
-        do
-
-            CheckBackpack()
-
-            task.wait(0.25)
-
-        end
-
-    end)
-end
-
-
-local function StopBackpackWatcher()
-
-    BackpackWatchID += 1
-end
-
-
---// ============================================================
---// AUTO COLLECT CASH
---// ============================================================
-
-local AutoCollectLoopID =
-    0
-
-
-local function GetCollectTouch()
-
-    local Area =
-        GetBaseArea()
-
-
-    local Button =
-        Area:FindFirstChild(
-            COLLECT_BUTTON_NAME
-        )
-
-
-    if not Button then
-        return nil
-    end
-
-
-    local Touch =
-        Button:FindFirstChild(
-            "Touch"
-        )
-
-
-    if
-        Touch
-        and Touch:IsA(
-            "BasePart"
-        )
-    then
-
-        return Touch
-
-    end
-
-
-    return nil
-end
-
-
-local function CollectCashOnce()
-
-    local Root =
-        GetRoot()
-
-
-    local Touch =
-        GetCollectTouch()
-
-
-    if
-        not Root
-        or not Touch
-    then
-
-        return
-    end
-
-
-    if typeof(
-        firetouchinterest
-    ) ~= "function"
-    then
-
-        return
-    end
-
-
-    pcall(function()
-
-        firetouchinterest(
-            Root,
-            Touch,
-            0
-        )
-
-
-        task.wait(0.05)
-
-
-        firetouchinterest(
-            Root,
-            Touch,
-            1
-        )
-
-    end)
-end
-
-
-local function StartAutoCollectCash()
-
-    AutoCollectLoopID += 1
-
-
-    local ID =
-        AutoCollectLoopID
-
-
-    task.spawn(function()
-
-        CollectCashOnce()
-
-
-        while
-            HubRunning
-            and Settings.AutoCollectCash
-            and ID == AutoCollectLoopID
-        do
-
-            task.wait(
-                Settings.CashCollectDelay
-            )
-
-
-            CollectCashOnce()
-
-        end
-
-    end)
-end
-
-
-local function StopAutoCollectCash()
-
-    Settings.AutoCollectCash =
-        false
-
-
-    AutoCollectLoopID += 1
-end
-
-
---// ============================================================
---// PRICE PARSER
---// ============================================================
-
-local PriceSuffixes = {
-
-    [""] = 1,
-
-    ["k"] = 1e3,
-    ["m"] = 1e6,
-    ["b"] = 1e9,
-    ["t"] = 1e12,
-
-    ["qa"] = 1e15,
-    ["qi"] = 1e18,
-
-    ["sx"] = 1e21,
-    ["sp"] = 1e24,
-
-    ["oc"] = 1e27,
-    ["no"] = 1e30,
-
-    ["dc"] = 1e33
-}
-
-
-local function ParsePrice(
-    Text
-)
-
-    if typeof(Text)
-        ~= "string"
-    then
-
-        return nil
-    end
-
-
-    local Clean =
-        string.lower(
-            Text
-        )
-
-
-    Clean =
-        Clean:gsub(",", "")
-
-    Clean =
-        Clean:gsub("%$", "")
-
-    Clean =
-        Clean:gsub("%s+", "")
-
-
-    local NumberText, Suffix =
-        Clean:match(
-            "^([%d%.]+)([%a]*)$"
-        )
-
-
-    if not NumberText then
-        return nil
-    end
-
-
-    local Number =
-        tonumber(
-            NumberText
-        )
-
-
-    local Multiplier =
-        PriceSuffixes[
-            Suffix
-        ]
-
-
-    if
-        not Number
-        or not Multiplier
-    then
-
-        return nil
-    end
-
-
-    return
-        Number
-        * Multiplier
-end
-
-
---// ============================================================
---// AURA
---// ============================================================
-
-local function GetAuraInfo(
-    Card
-)
-
-    local ID =
-        tonumber(
-            Card.Name
-        )
-
-
-    if not ID then
-        return nil
-    end
-
-
-    local Sellall =
-        Card:FindFirstChild(
-            "Sellall"
-        )
-
-
-    if not Sellall then
-        return nil
-    end
-
-
-    local Name =
-        "Aura "
-        .. tostring(ID)
-
-
-    local Flame =
-        Sellall:FindFirstChild(
-            "Flame"
-        )
-
-
-    local NameLabel =
-        Flame
-        and Flame:FindFirstChild(
-            "name"
-        )
-
-
-    if NameLabel then
-
-        Name =
-            NameLabel.Text
-
-    end
-
+            LocalPlayer:GetAttribute("MaxPets")
+        ) or 5
 
     local Owned =
-        false
+        CollectOwnedPets()
 
-
-    local EquipFolder =
-        Sellall:FindFirstChild(
-            "zhuangbei"
-        )
-
-
-    local EquipBian =
-        EquipFolder
-        and EquipFolder:FindFirstChild(
-            "Bian"
-        )
-
-
-    local EquipLabel =
-        EquipBian
-        and EquipBian:FindFirstChild(
-            "TextLabel"
-        )
-
-
-    if EquipLabel then
-
-        local Text =
-            string.lower(
-                tostring(
-                    EquipLabel.Text
-                )
-            )
-
-
-        Owned =
-
-            Text == "equip"
-
-            or Text == "unequip"
-
+    if #Owned == 0 then
+        BestPetsBusy = false
+        return false, "No pets were found."
     end
 
-
-    local Sell1 =
-        Sellall:FindFirstChild(
-            "Sell1"
-        )
-
-
-    local PriceBian =
-        Sell1
-        and Sell1:FindFirstChild(
-            "Bian"
-        )
-
-
-    local PriceLabel =
-        PriceBian
-        and PriceBian:FindFirstChild(
-            "TextLabel"
-        )
-
-
-    local PriceText =
-        PriceLabel
-        and PriceLabel.Text
-
-
-    return {
-
-        id = ID,
-
-        name = Name,
-
-        owned = Owned,
-
-        price =
-            PriceText
-            and ParsePrice(
-                PriceText
-            ),
-
-        card = Card
-    }
-end
-
-
-local function FindNextAura()
-
-    local List = {}
-
-
-    for _, Card in ipairs(
-        AuraScrollingFrame:GetChildren()
-    ) do
-
-        local Info =
-            GetAuraInfo(
-                Card
-            )
-
-
-        if Info then
-
-            table.insert(
-                List,
-                Info
-            )
-
-        end
-
-    end
-
-
-    table.sort(
-        List,
-
-        function(A, B)
-
-            return A.id < B.id
-
-        end
-    )
-
-
-    for _, Info in ipairs(
-        List
-    ) do
-
-        if
-            not Info.owned
-            and Info.price
-        then
-
-            return Info
-
-        end
-
-    end
-
-
-    return nil
-end
-
-
-local CurrentAuraTarget =
-    nil
-
-
-local AuraBuying =
-    false
-
-
-local function RefreshAuraTarget()
-
-    CurrentAuraTarget =
-        FindNextAura()
-end
-
-
-local function BuyTargetAura()
-
-    if
-        not HubRunning
-        or not Settings.AutoBuyBestAura
-        or AuraBuying
-    then
-
-        return
-    end
-
-
-    if not CurrentAuraTarget then
-
-        RefreshAuraTarget()
-
-    end
-
-
-    local Aura =
-        CurrentAuraTarget
-
-
-    if not Aura then
-        return
-    end
-
-
-    local Updated =
-        GetAuraInfo(
-            Aura.card
-        )
-
-
-    if
-        Updated
-        and Updated.owned
-    then
-
-        RefreshAuraTarget()
-
-        Aura =
-            CurrentAuraTarget
-
-    end
-
-
-    if not Aura then
-        return
-    end
-
-
-    local Cash =
-        tonumber(
-            CashValue.Value
-        ) or 0
-
-
-    if Cash < Aura.price then
-        return
-    end
-
-
-    AuraBuying =
-        true
-
-
-    local CashBefore =
-        Cash
-
-
-    pcall(function()
-
-        AuraBuyEvent:FireServer(
-            Aura.id
-        )
-
-    end)
-
-
-    task.spawn(function()
-
-        local Started =
-            os.clock()
-
-
-        while
-            HubRunning
-            and os.clock() - Started < 3
-        do
-
-            task.wait(0.1)
-
-
-            local Info =
-                GetAuraInfo(
-                    Aura.card
-                )
-
-
-            local NewCash =
-                tonumber(
-                    CashValue.Value
-                ) or 0
-
-
-            if
-                (
-                    Info
-                    and Info.owned
-                )
-                or NewCash < CashBefore
-            then
-
-                AuraBuying =
-                    false
-
-
-                RefreshAuraTarget()
-
-                BuyTargetAura()
-
-                return
-
-            end
-
-        end
-
-
-        AuraBuying =
-            false
-
-    end)
-end
-
-
-local function CheckAuraCash()
-
-    if
-        not HubRunning
-        or not Settings.AutoBuyBestAura
-    then
-
-        return
-    end
-
-
-    if not CurrentAuraTarget then
-
-        RefreshAuraTarget()
-
-    end
-
-
-    if
-        CurrentAuraTarget
-        and tonumber(
-            CashValue.Value
-        ) >= CurrentAuraTarget.price
-    then
-
-        BuyTargetAura()
-
-    end
-end
-
-
---// ============================================================
---// WATER PUMP
---// ============================================================
-
-local function GetPumpInfo(
-    Card
-)
-
-    local ID =
-        tonumber(
-            Card.Name
-        )
-
-
-    if not ID then
-        return nil
-    end
-
-
-    local Sellall =
-        Card:FindFirstChild(
-            "Sellall"
-        )
-
-
-    if not Sellall then
-        return nil
-    end
-
-
-    local Equip =
-        Sellall:FindFirstChild(
-            "Equip"
-        )
-
-
-    local Owned =
-
-        Equip
-
-        and Equip:IsA(
-            "GuiObject"
-        )
-
-        and Equip.Visible == true
-
-
-    local Sell =
-        Sellall:FindFirstChild(
-            "Sell"
-        )
-
-
-    local PriceBian =
-        Sell
-        and Sell:FindFirstChild(
-            "Bian"
-        )
-
-
-    local PriceLabel =
-        PriceBian
-        and PriceBian:FindFirstChild(
-            "TextLabel"
-        )
-
-
-    local PriceText =
-        PriceLabel
-        and PriceLabel.Text
-
-
-    return {
-
-        id = ID,
-
-        owned = Owned,
-
-        price =
-            PriceText
-            and ParsePrice(
-                PriceText
-            ),
-
-        card = Card
-    }
-end
-
-
-local function FindNextPump()
-
-    local List = {}
-
-
-    for _, Card in ipairs(
-        PumpScrollingFrame:GetChildren()
-    ) do
-
-        local Info =
-            GetPumpInfo(
-                Card
-            )
-
-
-        if Info then
-
-            table.insert(
-                List,
-                Info
-            )
-
-        end
-
-    end
-
-
-    table.sort(
-        List,
-
-        function(A, B)
-
-            return A.id < B.id
-
-        end
-    )
-
-
-    for _, Info in ipairs(
-        List
-    ) do
-
-        if
-            not Info.owned
-            and Info.price
-        then
-
-            return Info
-
-        end
-
-    end
-
-
-    return nil
-end
-
-
-local CurrentPumpTarget =
-    nil
-
-
-local PumpBuying =
-    false
-
-
-local function RefreshPumpTarget()
-
-    CurrentPumpTarget =
-        FindNextPump()
-end
-
-
-local function BuyTargetPump()
-
-    if
-        not HubRunning
-        or not Settings.AutoBuyBestPump
-        or PumpBuying
-    then
-
-        return
-    end
-
-
-    if not CurrentPumpTarget then
-
-        RefreshPumpTarget()
-
-    end
-
-
-    local Pump =
-        CurrentPumpTarget
-
-
-    if not Pump then
-        return
-    end
-
-
-    local Updated =
-        GetPumpInfo(
-            Pump.card
-        )
-
-
-    if
-        Updated
-        and Updated.owned
-    then
-
-        RefreshPumpTarget()
-
-        Pump =
-            CurrentPumpTarget
-
-    end
-
-
-    if not Pump then
-        return
-    end
-
-
-    local Cash =
-        tonumber(
-            CashValue.Value
-        ) or 0
-
-
-    if Cash < Pump.price then
-        return
-    end
-
-
-    PumpBuying =
-        true
-
-
-    local CashBefore =
-        Cash
-
-
-    pcall(function()
-
-        PumpBuyEvent:FireServer(
-            Pump.id
-        )
-
-    end)
-
-
-    task.spawn(function()
-
-        local Started =
-            os.clock()
-
-
-        while
-            HubRunning
-            and os.clock() - Started < 3
-        do
-
-            task.wait(0.1)
-
-
-            local Info =
-                GetPumpInfo(
-                    Pump.card
-                )
-
-
-            local NewCash =
-                tonumber(
-                    CashValue.Value
-                ) or 0
-
-
-            if
-                (
-                    Info
-                    and Info.owned
-                )
-                or NewCash < CashBefore
-            then
-
-                PumpBuying =
-                    false
-
-
-                RefreshPumpTarget()
-
-                BuyTargetPump()
-
-                return
-
-            end
-
-        end
-
-
-        PumpBuying =
-            false
-
-    end)
-end
-
-
-local function CheckPumpCash()
-
-    if
-        not HubRunning
-        or not Settings.AutoBuyBestPump
-    then
-
-        return
-    end
-
-
-    if not CurrentPumpTarget then
-
-        RefreshPumpTarget()
-
-    end
-
-
-    if
-        CurrentPumpTarget
-        and tonumber(
-            CashValue.Value
-        ) >= CurrentPumpTarget.price
-    then
-
-        BuyTargetPump()
-
-    end
-end
-
-
---// ============================================================
---// UPGRADES
---// ============================================================
-
-local UpgradeConfigs = {
-
-    {
-        slot = "1",
-        key = "Backpack"
-    },
-
-    {
-        slot = "2",
-        key = "Speed"
-    },
-
-    {
-        slot = "3",
-        key = "FishDisplay"
-    }
-}
-
-
-local function GetUpgradeInfo(
-    Config
-)
-
-    local Section =
-        UpgradeScrollingFrame:FindFirstChild(
-            Config.slot
-        )
-
-
-    if not Section then
-        return nil
-    end
-
-
-    local Card =
-        Section:FindFirstChild(
-            "1"
-        )
-
-
-    if not Card then
-        return nil
-    end
-
-
-    local Sell =
-        Card:FindFirstChild(
-            "Sell"
-        )
-
-
-    local Bian =
-        Sell
-        and Sell:FindFirstChild(
-            "Bian"
-        )
-
-
-    local PriceLabel =
-        Bian
-        and Bian:FindFirstChild(
-            "TextLabel"
-        )
-
-
-    if not PriceLabel then
-        return nil
-    end
-
-
-    return {
-
-        key = Config.key,
-
-        price =
-            ParsePrice(
-                PriceLabel.Text
-            ),
-
-        priceText =
-            PriceLabel.Text,
-
-        priceLabel =
-            PriceLabel
-    }
-end
-
-
-local function FindAffordableUpgrade()
-
-    local Cash =
-        tonumber(
-            CashValue.Value
-        ) or 0
-
-
-    local Best =
-        nil
-
-
-    for _, Config in ipairs(
-        UpgradeConfigs
-    ) do
-
-        local Info =
-            GetUpgradeInfo(
-                Config
-            )
-
-
-        if
-            Info
-            and Info.price
-            and Cash >= Info.price
-        then
-
-            if
-                not Best
-                or Info.price < Best.price
-            then
-
-                Best =
-                    Info
-
-            end
-
-        end
-
-    end
-
-
-    return Best
-end
-
-
-local UpgradeBuying =
-    false
-
-
-local function BuyAffordableUpgrade()
-
-    if
-        not HubRunning
-        or not Settings.AutoBuyUpgrades
-        or UpgradeBuying
-    then
-
-        return
-    end
-
-
-    local Upgrade =
-        FindAffordableUpgrade()
-
-
-    if not Upgrade then
-        return
-    end
-
-
-    UpgradeBuying =
-        true
-
-
-    local CashBefore =
-        tonumber(
-            CashValue.Value
-        ) or 0
-
-
-    local OldPrice =
-        Upgrade.priceText
-
-
-    pcall(function()
-
-        UpgradeBuyEvent:FireServer(
-            Upgrade.key
-        )
-
-    end)
-
-
-    task.spawn(function()
-
-        local Started =
-            os.clock()
-
-
-        while
-            HubRunning
-            and os.clock() - Started < 3
-        do
-
-            task.wait(0.1)
-
-
-            local NewCash =
-                tonumber(
-                    CashValue.Value
-                ) or 0
-
-
-            local NewPrice =
-                Upgrade.priceLabel
-                and Upgrade.priceLabel.Parent
-                and Upgrade.priceLabel.Text
-                or nil
-
-
-            if
-                NewCash < CashBefore
-                or NewPrice ~= OldPrice
-            then
-
-                UpgradeBuying =
-                    false
-
-
-                task.wait(0.15)
-
-                BuyAffordableUpgrade()
-
-                return
-
-            end
-
-        end
-
-
-        UpgradeBuying =
-            false
-
-    end)
-end
-
-
-local function CheckUpgradeCash()
-
-    if Settings.AutoBuyUpgrades then
-
-        BuyAffordableUpgrade()
-
-    end
-end
-
-
---// ============================================================
---// REBIRTH
---// ============================================================
-
-local RebirthBusy =
-    false
-
-
-local LastRebirthText =
-    nil
-
-
-local function GetRebirthProgress()
-
-    local Current, Required =
-        tostring(
-            RebirthProgressLabel.Text
-        ):match(
-            "(%d+)%s*/%s*(%d+)"
-        )
-
-
-    return
-
-        tonumber(Current),
-
-        tonumber(Required)
-end
-
-
-local function TryAutoRebirth()
-
-    if
-        not HubRunning
-        or not Settings.AutoRebirth
-        or RebirthBusy
-    then
-
-        return
-    end
-
-
-    local Current, Required =
-        GetRebirthProgress()
-
-
-    if
-        not Current
-        or not Required
-    then
-
-        return
-    end
-
-
-    if Current < Required then
-
-        LastRebirthText =
-            nil
-
-
-        return
-    end
-
-
-    local Text =
-        tostring(
-            RebirthProgressLabel.Text
-        )
-
-
-    if Text == LastRebirthText then
-        return
-    end
-
-
-    LastRebirthText =
-        Text
-
-
-    RebirthBusy =
-        true
-
-
-    pcall(function()
-
-        RebirthEvent:FireServer()
-
-    end)
-
-
-    task.spawn(function()
-
-        local Old =
-            Text
-
-
-        local Started =
-            os.clock()
-
-
-        while
-            HubRunning
-            and Settings.AutoRebirth
-            and os.clock() - Started < 5
-        do
-
-            task.wait(0.1)
-
-
-            if tostring(
-                RebirthProgressLabel.Text
-            ) ~= Old
-            then
-
-                RebirthBusy =
-                    false
-
-
-                LastRebirthText =
-                    nil
-
-
-                task.wait(0.25)
-
-                TryAutoRebirth()
-
-                return
-
-            end
-
-        end
-
-
-        RebirthBusy =
-            false
-
-    end)
-end
-
-
---// ============================================================
---// FISH FARM MAP
---// ============================================================
-
-local function GetFarmScene()
-
-    local MainScene =
-        Workspace:FindFirstChild(
-            MAIN_SCENE_NAME
-        )
-
-
-    return
-
-        MainScene
-
-        and MainScene:FindFirstChild(
-            FARM_SCENE_NAME
-        )
-end
-
-
-local function GetWorldFish()
-
-    local Scene =
-        GetFarmScene()
-
-
-    return
-
-        Scene
-
-        and Scene:FindFirstChild(
-            "WorldFish"
-        )
-end
-
-
---// ============================================================
---// STAGES
---// ============================================================
-
-local function GetStages()
-
-    local Scene =
-        GetFarmScene()
-
-
-    local Stages = {}
-
-
-    if not Scene then
-        return Stages
-    end
-
-
-    for _, Child in ipairs(
-        Scene:GetChildren()
-    ) do
-
-        local Number =
-            tonumber(
-                Child.Name:match(
-
-                    "^"
-                    .. STAGE_PREFIX
-                    .. "(%d+)$"
-                )
-            )
-
-
-        if Number then
-
-            table.insert(
-                Stages,
-                {
-
-                    number = Number,
-
-                    folder = Child
-                }
-            )
-
-        end
-
-    end
-
-
-    table.sort(
-        Stages,
-
-        function(A, B)
-
-            return A.number < B.number
-
-        end
-    )
-
-
-    return Stages
-end
-
-
-local function GetStageWater(
-    StageFolder
-)
-
-    local Water =
-        StageFolder
-        and StageFolder:FindFirstChild(
-            WATER_NAME
-        )
-
-
-    if
-        Water
-        and Water:IsA(
-            "BasePart"
-        )
-    then
-
-        return Water
-
-    end
-
-
-    return nil
-end
-
-
-local function IsWaterDrained(
-    Water
-)
-
-    if not Water then
-        return true
-    end
-
-
-    return
-
-        Water.CanTouch == false
-
-        and Water.CanQuery == false
-
-        and Water.CanCollide == false
-end
-
-
---// ============================================================
---// FISH INFO
---// ============================================================
-
-local function GetFishInfo(
-    Fish
-)
-
-    local StageNumber =
-        tonumber(
-            Fish.Name:match(
-                "^Fish_(%d+)_"
-            )
-        )
-
-
-    if not StageNumber then
-        return nil
-    end
-
-
-    local FishRoot =
-        Fish:FindFirstChild(
-            "FishRoot"
-        )
-
-
-    if
-        not FishRoot
-        or not FishRoot:IsA(
-            "BasePart"
-        )
-    then
-
-        return nil
-    end
-
-
-    local Prompt =
-        FishRoot:FindFirstChild(
-            "PickupPrompt"
-        )
-
-
-    if
-        not Prompt
-        or not Prompt:IsA(
-            "ProximityPrompt"
-        )
-    then
-
-        return nil
-    end
-
-
-    return {
-
-        model = Fish,
-
-        root = FishRoot,
-
-        prompt = Prompt,
-
-        stage = StageNumber,
-
-        rarity =
-            tostring(
-                Fish:GetAttribute(
-                    "Rarity"
-                ) or "Unknown"
-            ),
-
-        price =
-            tonumber(
-                Fish:GetAttribute(
-                    "Price"
-                )
-            ) or 0
-    }
-end
-
-
---// ============================================================
---// FIND FARM FISH
---// ============================================================
-
-local function FindBestFishInStage(
-    StageNumber
-)
-
-    local Folder =
-        GetWorldFish()
-
-
-    if not Folder then
-        return nil
-    end
-
-
-    local Candidates = {}
-
-
-    for _, Fish in ipairs(
-        Folder:GetChildren()
-    ) do
-
-        local Info =
-            GetFishInfo(
-                Fish
-            )
-
-
-        if
-            Info
-            and Info.stage == StageNumber
-            and Info.prompt.Enabled
-        then
-
-            local Accept =
-                false
-
-
-            if
-                Settings.FishFarmMode
-                == "Highest Price"
-            then
-
-                Accept =
-                    true
-
-
-            elseif
-                Settings.FishFarmMode
-                == "Rarity"
-            then
-
-                Accept =
-
-                    Settings.FishRarity
-                    == "Any"
-
-                    or Info.rarity
-                    == Settings.FishRarity
-
-            end
-
-
-            if Accept then
-
-                table.insert(
-                    Candidates,
-                    Info
-                )
-
-            end
-
-        end
-
-    end
-
-
-    table.sort(
-        Candidates,
-
-        function(A, B)
-
-            return A.price > B.price
-
-        end
-    )
-
-
-    return Candidates[1]
-end
-
-
-local function PickupFarmFish(
-    StageNumber
-)
-
-    if
-        IsBackpackFull()
-        or not Settings.AutoFarmFish
-    then
-
-        return false
-    end
-
-
-    local Fish =
-        FindBestFishInStage(
-            StageNumber
-        )
-
-
-    if not Fish then
-        return false
-    end
-
-
-    TeleportToCFrame(
-
-        Fish.root.CFrame
-        * CFrame.new(
-            0,
-            2,
-            0
-        )
-    )
-
-
-    task.wait(0.07)
-
-
-    if typeof(
-        fireproximityprompt
-    ) ~= "function"
-    then
-
-        return false
-    end
-
-
-    local Success =
-        pcall(function()
-
-            fireproximityprompt(
-                Fish.prompt
-            )
-
-        end)
-
-
-    task.wait(
-        Settings.FishPickupDelay
-    )
-
-
-    return Success
-end
-
-
-local function FarmStageUntilFull(
-    StageNumber
-)
-
-    while
-        HubRunning
-        and Settings.AutoFarmFish
-        and not IsBackpackFull()
-    do
-
-        if not PickupFarmFish(
-            StageNumber
-        )
-        then
-
-            task.wait(0.2)
-
-        end
-
-    end
-
-
-    return
-        IsBackpackFull()
-end
-
-
-local function WaitForBackpackReset()
-
-    FarmWaitingForBackpack =
-        true
-
-    if Settings.AutoHome then
-
-        CheckBackpack()
-
-    end
-
-
-    local LastRetry =
-        0
-
-
-    while
-        HubRunning
-        and Settings.AutoFarmFish
-    do
-
-        local Amount, Capacity =
-            GetBackpackNumbers()
-
-
-        if
-            Capacity > 0
-            and Amount < Capacity
-            and not BackpackSequenceBusy
-        then
-
-            BackpackFullHandled =
-                false
-
-            -- Give the server/character a moment to settle before the
-            -- farm begins teleporting through stages again.
-            task.wait(
-                Settings.FarmResumeDelay
-            )
-
-            FarmWaitingForBackpack =
-                false
-
-            return true
-
-        end
-
-
-        -- If Auto Sell is enabled but a previous sell didn't actually
-        -- clear the backpack, re-arm the home sequence and try again.
-        if
-            Settings.AutoHome
-            and Settings.AutoSellFish
-            and IsBackpackFull()
-            and not BackpackSequenceBusy
-            and os.clock() - LastRetry >= 1
-        then
-
-            BackpackFullHandled =
-                false
-
-            CheckBackpack()
-
-            LastRetry =
-                os.clock()
-
-        elseif Settings.AutoHome then
-
-            CheckBackpack()
-
-        end
-
-
-        task.wait(0.15)
-
-    end
-
-
-    FarmWaitingForBackpack =
-        false
-
-    return false
-end
-
-
-local function DrainStageTimed(
-    Stage,
-    HasCompletedStage
-)
-
-    local Water =
-        GetStageWater(
-            Stage.folder
-        )
-
-
-    if not Water then
-        return "skip"
-    end
-
-
-    if IsWaterDrained(
-        Water
-    ) then
-
-        return "done"
-    end
-
-
-    local Started =
-        os.clock()
-
-
-    local LastTeleport =
-        0
-
-
-    while
-        HubRunning
-        and Settings.AutoFarmFish
-        and Water.Parent
-        and not IsWaterDrained(
-            Water
+    local Desired = {}
+    local DesiredKeys = {}
+
+    for Index = 1,
+        math.min(
+            MaxPets,
+            #Owned
         )
     do
+        local Pet =
+            Owned[Index]
 
-        if
-            HasCompletedStage
-            and os.clock() - Started
-                >= Settings.StageDrainTimeout
+        Desired[Index] = Pet
+        DesiredKeys[Pet.Key] = true
+    end
+
+    -- Save positions of pets being removed, matching the game's own
+    -- Place Best behavior so replacement pets can reuse those spots.
+    local ReusablePositions = {}
+    local RemovedCount = 0
+
+    for _, Pet in ipairs(Owned) do
+        if Pet.Placed
+            and not DesiredKeys[Pet.Key]
         then
-
-            return "timeout"
-
-        end
-
-
-        if
-            os.clock()
-            - LastTeleport
-            >= 0.25
-        then
-
-            TeleportToCFrame(
-
-                Water.CFrame
-                * CFrame.new(
-                    0,
-
-                    Water.Size.Y
-                    * 0.5
-                    + 2.5,
-
-                    0
-                )
-            )
-
-
-            LastTeleport =
-                os.clock()
-
-        end
-
-
-        if not Settings.AutoWater then
-
-            WaterOnce()
-
-        end
-
-
-        RunService.Heartbeat:Wait()
-
-    end
-
-
-    if IsWaterDrained(
-        Water
-    ) then
-
-        return "done"
-
-    end
-
-
-    return "stopped"
-end
-
-
---// ============================================================
---// FARM LOOP
---// ============================================================
-
-local FishFarmLoopID =
-    0
-
-
-local LastCompletedStage =
-    nil
-
-
-local function DoFarmResetCycle()
-
-    if not LastCompletedStage then
-        return false
-    end
-
-
-    if not FarmStageUntilFull(
-        LastCompletedStage
-    )
-    then
-
-        return false
-    end
-
-
-    if not WaitForBackpackReset() then
-
-        return false
-    end
-
-
-    LastCompletedStage =
-        nil
-
-
-    return true
-end
-
-
-local function StartFishFarm()
-
-    FishFarmLoopID += 1
-
-
-    local ID =
-        FishFarmLoopID
-
-
-    LastCompletedStage =
-        nil
-
-
-    task.spawn(function()
-
-        local StageIndex =
-            1
-
-
-        while
-            HubRunning
-            and Settings.AutoFarmFish
-            and ID == FishFarmLoopID
-        do
-
-            local Stages =
-                GetStages()
-
-
-            if #Stages == 0 then
-
-                task.wait(1)
-
-                continue
-            end
-
-
-            if StageIndex > #Stages then
-
-                if
-                    LastCompletedStage
-                    and DoFarmResetCycle()
-                then
-
-                    StageIndex =
-                        1
-
-                end
-
-
-                task.wait(0.1)
-
-                continue
-            end
-
-
-            local Stage =
-                Stages[
-                    StageIndex
-                ]
-
-
-            local Result =
-                DrainStageTimed(
-
-                    Stage,
-
-                    LastCompletedStage
-                    ~= nil
-                )
-
-
-            if Result == "done" then
-
-                LastCompletedStage =
-                    Stage.number
-
-
-                StageIndex += 1
-
-
-            elseif Result == "timeout" then
-
-                if DoFarmResetCycle() then
-
-                    StageIndex =
-                        1
-
-                end
-
-
-            elseif Result == "skip" then
-
-                StageIndex += 1
-
-
-            else
-
-                task.wait(0.25)
-
-            end
-
-
-            task.wait(0.05)
-
-        end
-
-    end)
-end
-
-
-local function StopFishFarm()
-
-    Settings.AutoFarmFish =
-        false
-
-
-    FishFarmLoopID += 1
-end
-
-
---// ============================================================
---// AUTO EGG
---// ============================================================
-
-local AutoOpenEggLoopID =
-    0
-
-
-local EggOpening =
-    false
-
-
--- Captured pet IDs selected for auto delete.
-
-local CapturedEggDeletePets = {
-
-    ["13"] = true,
-
-    ["14"] = true,
-
-    ["15"] = true
-}
-
-
-local function GetEggDeleteTable()
-
-    if not Settings.EggAutoDelete then
-
-        return {}
-
-    end
-
-
-    local Result = {}
-
-
-    for PetID, Enabled in pairs(
-        CapturedEggDeletePets
-    ) do
-
-        if Enabled then
-
-            Result[
-                PetID
-            ] = true
-
-        end
-
-    end
-
-
-    return Result
-end
-
-
-local function GetAvailableEggIDs()
-
-    local IDs = {}
-
-
-    for _, Object in ipairs(
-        EggZoneFolder:GetChildren()
-    ) do
-
-        local ID =
-            tonumber(
-                Object.Name:match(
-                    "^Egg(%d+)$"
-                )
-            )
-
-
-        if ID then
-
             table.insert(
-                IDs,
-                ID
+                ReusablePositions,
+                Pet.Position
             )
-
-        end
-
-    end
-
-
-    table.sort(
-        IDs
-    )
-
-
-    return IDs
-end
-
-
-local function GetEggDropdownOptions()
-
-    local Options = {}
-
-
-    for _, ID in ipairs(
-        GetAvailableEggIDs()
-    ) do
-
-        table.insert(
-            Options,
-            "Egg " .. ID
-        )
-
-    end
-
-
-    if #Options == 0 then
-
-        table.insert(
-            Options,
-            "Egg 4"
-        )
-
-    end
-
-
-    return Options
-end
-
-
-local function OpenEggOnce()
-
-    if
-        not HubRunning
-        or not Settings.AutoOpenEgg
-        or EggOpening
-    then
-
-        return false
-    end
-
-
-    EggOpening =
-        true
-
-
-    local Success, Result =
-        pcall(function()
-
-            return OpenEggFunction:InvokeServer(
-
-                Settings.EggId,
-
-                Settings.EggOpenAmount,
-
-                false,
-
-                GetEggDeleteTable()
-            )
-
-        end)
-
-
-    EggOpening =
-        false
-
-
-    if not Success then
-
-        warn(
-            "[Auto Egg]",
-            Result
-        )
-
-
-        return false
-    end
-
-
-    return true
-end
-
-
-local function StartAutoOpenEgg()
-
-    AutoOpenEggLoopID += 1
-
-
-    local ID =
-        AutoOpenEggLoopID
-
-
-    task.spawn(function()
-
-        while
-            HubRunning
-            and Settings.AutoOpenEgg
-            and ID == AutoOpenEggLoopID
-        do
-
-            OpenEggOnce()
-
-
-            task.wait(
-                Settings.EggOpenDelay
-            )
-
-        end
-
-    end)
-end
-
-
-local function StopAutoOpenEgg()
-
-    Settings.AutoOpenEgg =
-        false
-
-
-    AutoOpenEggLoopID += 1
-
-
-    EggOpening =
-        false
-end
-
-
---// ============================================================
---// CONNECTIONS
---// ============================================================
-
-TrackConnection(
-
-    AmountValue:GetPropertyChangedSignal(
-        "Value"
-    ):Connect(
-        CheckBackpack
-    )
-
-)
-
-
-TrackConnection(
-
-    CapacityValue:GetPropertyChangedSignal(
-        "Value"
-    ):Connect(
-        CheckBackpack
-    )
-
-)
-
-
-TrackConnection(
-
-    CashValue:GetPropertyChangedSignal(
-        "Value"
-    ):Connect(function()
-
-        CheckAuraCash()
-
-        CheckPumpCash()
-
-        CheckUpgradeCash()
-
-    end)
-
-)
-
-
-TrackConnection(
-
-    RebirthProgressLabel:GetPropertyChangedSignal(
-        "Text"
-    ):Connect(
-        TryAutoRebirth
-    )
-
-)
-
-
---// ============================================================
---// ANTI AFK
---// ============================================================
-
-local AntiAFKConnection = nil
-
-
-local function StartAntiAFK()
-
-    -- Prevent duplicate Idled connections if the toggle is re-enabled.
-    if AntiAFKConnection then
-
-        AntiAFKConnection:Disconnect()
-        AntiAFKConnection = nil
-
-    end
-
-    Settings.AntiAFK =
-        true
-
-
-    AntiAFKConnection =
-        LocalPlayer.Idled:Connect(function()
-
-            if
-                not HubRunning
-                or not Settings.AntiAFK
-            then
-
-                return
-            end
-
 
             pcall(function()
-
-                VirtualUser:CaptureController()
-
-                local Camera =
-                    Workspace.CurrentCamera
-
-                local CameraCFrame =
-                    Camera
-                    and Camera.CFrame
-                    or CFrame.new()
-
-
-                VirtualUser:Button2Down(
-                    Vector2.new(0, 0),
-                    CameraCFrame
+                PetRenderer.Remove(
+                    LocalPlayer.UserId,
+                    Pet.Key
                 )
-
-
-                task.wait(0.10)
-
-
-                VirtualUser:Button2Up(
-                    Vector2.new(0, 0),
-                    CameraCFrame
-                )
-
             end)
 
-        end)
-end
+            PickupPetEvent:FireServer(
+                Pet.Key
+            )
 
+            RemovedCount += 1
 
-local function StopAntiAFK()
-
-    Settings.AntiAFK =
-        false
-
-
-    if AntiAFKConnection then
-
-        AntiAFKConnection:Disconnect()
-        AntiAFKConnection = nil
-
-    end
-end
-
-
---// ============================================================
---// UNLOAD
---// ============================================================
-
-local function UnloadHub()
-
-    if not HubRunning then
-        return
+            task.wait(0.20)
+        end
     end
 
+    local PlacedCount = 0
 
-    HubRunning =
-        false
+    for Index, Pet in ipairs(Desired) do
+        if not Pet.Placed then
+            local Tool =
+                Pet.Tool
 
+            if not Tool or not Tool.Parent then
+                Tool =
+                    FindPetTool(
+                        Pet.Key
+                    )
+            end
 
-    Settings.AutoWater =
-        false
+            if Tool then
+                pcall(function()
+                    Humanoid:EquipTool(
+                        Tool
+                    )
+                end)
 
-    Settings.AutoFarmFish =
-        false
+                local Timeout =
+                    os.clock() + 2
 
-    Settings.AutoHome =
-        false
+                while Tool.Parent ~= Character
+                    and os.clock() < Timeout
+                do
+                    task.wait()
+                end
 
-    Settings.AutoSellFish =
-        false
+                if Tool.Parent == Character then
+                    local Position =
+                        table.remove(
+                            ReusablePositions,
+                            1
+                        )
+                        or GetPetPlacementPosition(
+                            Root,
+                            Index
+                        )
 
-    Settings.AutoOpenEgg =
-        false
+                    PlacePetEvent:FireServer(
+                        Pet.Key,
+                        Position
+                    )
 
-    Settings.AutoCollectCash =
-        false
+                    PlacedCount += 1
 
-    Settings.AutoBuyBestAura =
-        false
+                    task.wait(0.20)
+                end
+            end
+        end
+    end
 
-    Settings.AutoBuyBestPump =
-        false
-
-    Settings.AutoBuyUpgrades =
-        false
-
-    Settings.AutoRebirth =
-        false
-
-    Settings.AntiAFK =
-        false
-
-
-    StopAntiAFK()
-
-    StopAutoWater()
-
-    FarmWaitingForBackpack =
-        false
-
-    StopFishFarm()
-
-    StopAutoOpenEgg()
-
-    StopBackpackWatcher()
-
-
-    AutoCollectLoopID += 1
-
-
-    for _, Connection in ipairs(
-        Connections
-    ) do
-
+    if PlacedCount > 0
+        and LocalPlayer:GetAttribute("IsRiding") ~= true
+    then
         pcall(function()
-
-            Connection:Disconnect()
-
+            Humanoid:UnequipTools()
         end)
-
     end
 
+    -- Only sell AFTER the best-pet placement routine finishes.
+    -- This leaves the newly selected best pets placed and sells
+    -- whatever pet tools are still left in the inventory.
+    local SoldExtras = false
+    local SellMessage = nil
 
-    table.clear(
-        Connections
+    if Settings.AutoSellPets then
+        task.wait(0.25)
+
+        local RemainingPetTools =
+            CountPetTools()
+
+        if RemainingPetTools > 0 then
+            local SellSuccess, SellResult =
+                SellPetsOnce()
+
+            SoldExtras = SellSuccess
+            SellMessage = SellResult
+
+            if SellSuccess then
+                Log(
+                    "Auto Sell ran after Best Pets • "
+                        .. tostring(SellResult)
+                        .. " leftover pet tool(s)"
+                )
+            else
+                Log(
+                    "Auto Sell after Best Pets skipped/failed: "
+                        .. tostring(SellResult)
+                )
+            end
+        else
+            Log(
+                "Auto Sell after Best Pets: no leftover pet tools"
+            )
+        end
+    end
+
+    BestPetsBusy = false
+
+    if ShowNotification then
+        if PlacedCount == 0
+            and RemovedCount == 0
+        then
+            Toast(
+                "Best Pets",
+                "Best pets are already placed"
+            )
+        else
+            Toast(
+                "Best Pets",
+                "Placed "
+                    .. tostring(PlacedCount)
+                    .. " • Removed "
+                    .. tostring(RemovedCount)
+            )
+        end
+    end
+
+    Log(
+        "Best pets refresh: placed "
+            .. tostring(PlacedCount)
+            .. ", removed "
+            .. tostring(RemovedCount)
     )
 
-
-    pcall(function()
-
-        Window:Unload()
-
-    end)
+    return true,
+        {
+            Placed = PlacedCount,
+            Removed = RemovedCount,
+        }
 end
 
 
 --// ============================================================
---// POLISHED GEN2 UI
+--// AUTO PLACE BEST PETS
 --// ============================================================
 
--- Allow the next execution to cleanly unload this one first.
-getgenv().__FISHING_HUB_UNLOAD = UnloadHub
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoPlaceBestPets
+            and not BestPetsBusy
+        then
+            local Success, Message =
+                pcall(function()
+                    return PlaceBestPetsOnce(false)
+                end)
 
-local SessionStarted = os.clock()
+            if not Success then
+                Log(
+                    "Auto Place Best Pets error: "
+                        .. tostring(Message)
+                )
+                BestPetsBusy = false
+            end
+        end
 
---============================================================
--- Diagnostics console / logging
---============================================================
-
-local DebugConsole = DiagnosticsTab:CreateConsole({
-    name = "Fishing Hub Console",
-    text = "Fishing Hub initialized.",
-    height = 180,
-    follow = true,
-    maxLines = 200
-})
-
-local function Log(Message)
-    if DebugConsole then
-        DebugConsole:Append(
-            string.format("[%06.1f] %s", os.clock() - SessionStarted, tostring(Message))
+        task.wait(
+            math.max(
+                tonumber(
+                    Settings.BestPetsCheckDelay
+                ) or 2,
+                0.5
+            )
         )
     end
-end
+end)
 
-local function Toast(Title, Subtitle)
-    Window:Toast({
-        title = Title,
-        subtitle = Subtitle,
-        duration = 3
-    })
-end
 
---============================================================
--- Dashboard
---============================================================
-
-DashboardTab:CreateDivider({ text = "Live Session" })
+--// ============================================================
+--// DASHBOARD
+--// ============================================================
 
 local StatsRowA = DashboardTab:CreateGroup()
-local BackpackAmountStat = StatsRowA:CreateStat({
-    name = "Backpack",
+
+local RenderedStat = StatsRowA:CreateStat({
+    name = "Rendered Eggs",
     value = 0,
     compact = true,
     changeMode = "absolute"
 })
-local BackpackCapacityStat = StatsRowA:CreateStat({
-    name = "Capacity",
+
+local MatchingStat = StatsRowA:CreateStat({
+    name = "Matching",
     value = 0,
     compact = true,
     changeMode = "absolute"
 })
-local CashStat = StatsRowA:CreateStat({
-    name = "Cash",
+
+local PickupStat = StatsRowA:CreateStat({
+    name = "Pickups",
     value = 0,
-    prefix = "$",
     compact = true,
     changeMode = "absolute"
 })
 
 local StatsRowB = DashboardTab:CreateGroup()
-local ActiveStat = StatsRowB:CreateStat({
-    name = "Active",
+
+local SearchStat = StatsRowB:CreateStat({
+    name = "Searches",
     value = 0,
     compact = true,
     changeMode = "absolute"
 })
-local StageStat = StatsRowB:CreateStat({
-    name = "Stages",
-    value = 0,
-    compact = true,
-    changeMode = "absolute"
-})
+
 local RuntimeStat = StatsRowB:CreateStat({
     name = "Runtime",
     value = 0,
@@ -3789,863 +2745,838 @@ local RuntimeStat = StatsRowB:CreateStat({
     changeMode = "absolute"
 })
 
+local PlotStat = StatsRowB:CreateStat({
+    name = "Plot",
+    value = 0,
+    compact = true,
+    changeMode = "absolute"
+})
+
 local SessionSummary = DashboardTab:CreateText({
-    name = "Automation Status",
-    text = "No automation is currently active."
+    name = "Status",
+    text = "Auto Pickup is currently disabled."
 })
 
-local AutomationFlags = {
-    "AutoWater",
-    "AutoFarmFish",
-    "AutoHomeWhenFull",
-    "AutoSellFish",
-    "AutoOpenEgg",
-    "AutoCollectCash",
-    "AutoBuyBestAura",
-    "AutoBuyBestPump",
-    "AutoBuyUpgrades",
-    "AutoRebirth",
-    "AntiAFK"
-}
+task.spawn(function()
+    while HubRunning do
+        local Matches = GetMatchingSelectedEggs()
+        local Plot = GetPlayerPlot()
 
-local function CountActiveAutomation()
-    local Count = 0
+        RenderedStat:Set(#RenderedEggs:GetChildren())
+        MatchingStat:Set(#Matches)
+        PickupStat:Set(PickupCount)
 
-    if Settings.AutoWater then Count += 1 end
-    if Settings.AutoFarmFish then Count += 1 end
-    if Settings.AutoHome then Count += 1 end
-    if Settings.AutoSellFish then Count += 1 end
-    if Settings.AutoOpenEgg then Count += 1 end
-    if Settings.AutoCollectCash then Count += 1 end
-    if Settings.AutoBuyBestAura then Count += 1 end
-    if Settings.AutoBuyBestPump then Count += 1 end
-    if Settings.AutoBuyUpgrades then Count += 1 end
-    if Settings.AutoRebirth then Count += 1 end
-    if Settings.AntiAFK then Count += 1 end
+        SearchStat:Set(SearchCount)
+        RuntimeStat:Set(math.floor(os.clock() - SessionStarted))
+        PlotStat:Set(Plot and 1 or 0)
 
-    return Count
-end
+        if Settings.AutoPickup then
+            SessionSummary:Set(
+                "Watching for: " .. GetSelectedLuckText()
+            )
 
-local function StopAllAutomation()
-    for _, Flag in ipairs(AutomationFlags) do
-        pcall(function()
-            Window:Set(Flag, false)
-        end)
-    end
+            pcall(function()
+                StatusTag:SetText("ACTIVE")
+                StatusTag:SetColor(Settings.HighlightColor)
+            end)
+        else
+            SessionSummary:Set(
+                "Auto Pickup is currently disabled."
+            )
 
-    Log("All automation stopped.")
-    Toast("Automation stopped", "Every active toggle was disabled.")
-end
-
-local QuickActions = DashboardTab:CreateGroup()
-
-QuickActions:CreateButton({
-    name = "Stop Everything",
-    description = "Immediately disables every automation toggle.",
-    callback = StopAllAutomation
-})
-
-QuickActions:CreateButton({
-    name = "Save Config",
-    callback = function()
-        if Window:Save() then
-            Log("Configuration saved.")
-            Toast("Saved", "Configuration written successfully.")
+            pcall(function()
+                StatusTag:SetText("IDLE")
+                StatusTag:SetColor(Color3.fromRGB(115, 120, 135))
+            end)
         end
-    end
-})
 
-QuickActions:CreateButton({
-    name = "Hide UI",
+        task.wait(0.5)
+    end
+end)
+
+DashboardTab:CreateButton({
+    name = "Show Session Status",
     callback = function()
-        Window:Hide()
+        local Plot = GetPlayerPlot()
+        local Matches = GetMatchingSelectedEggs()
+
+        Notify(
+            "Session Status",
+            "Selected: " .. GetSelectedLuckText()
+                .. "\nRendered Eggs: " .. tostring(#RenderedEggs:GetChildren())
+                .. "\nMatching Eggs: " .. tostring(#Matches)
+                .. "\nPickups: " .. tostring(PickupCount)
+                .. "\nAuto Place: " .. tostring(Settings.AutoPlaceEgg)
+                .. "\nAuto Hatch: " .. tostring(Settings.AutoHatch)
+                .. "\nAuto Luck Upgrade: " .. tostring(Settings.AutoHatchLuckUpgrade)
+                .. "\nBest Pets: " .. tostring(Settings.AutoPlaceBestPets)
+                .. "\nSell After Best Pets: " .. tostring(Settings.AutoSellPets)
+                .. "\nAuto Feed Best Pets: " .. tostring(Settings.AutoFeedBestPets)
+                .. "\nAnti AFK: " .. tostring(Settings.AntiAFK)
+                .. "\nPlot: " .. tostring(Plot and Plot.Name or "Not Found"),
+            6
+        )
     end
 })
 
---============================================================
--- Farm tab
---============================================================
+--// ============================================================
+--// EGGS TAB
+--// ============================================================
 
-local FarmGrid = FarmTab:CreateGroup()
-local FarmLeft = FarmGrid:CreateGroup({ direction = "column" })
-local FarmRight = FarmGrid:CreateGroup({ direction = "column" })
+EggsTab:CreateDropdown({
+    name = "Egg Luck",
+    options = LuckOptions,
+    value = { "5 Luck" },
+    multiSelect = true,
+    flag = "SelectedEggLuck",
 
-FarmLeft:CreateSection({ name = "Automation" })
-
-FarmLeft:CreateToggle({
-    name = "Auto Water",
-    flag = "AutoWater",
-    value = false,
     callback = function(Value)
-        Settings.AutoWater = Value
+        Settings.SelectedLucks = NormalizeLuckSelection(Value)
+
+        Toast(
+            "Selected Eggs",
+            GetSelectedLuckText()
+        )
+
+        Log("Selected lucks: " .. GetSelectedLuckText())
+    end
+})
+
+local EggToggleRow = EggsTab:CreateGroup()
+
+EggToggleRow:CreateToggle({
+    name = "Auto Pickup",
+    value = false,
+    flag = "AutoPickup",
+
+    callback = function(Value)
+        Settings.AutoPickup = Value
+
+        Log("Auto Pickup: " .. tostring(Value))
 
         if Value then
-            StartAutoWater()
-            Log("Auto Water enabled.")
+            Toast(
+                "Auto Pickup",
+                "Watching for: " .. GetSelectedLuckText()
+            )
         else
-            StopAutoWater()
-            Log("Auto Water disabled.")
+            -- Stop the current egg/return movement immediately.
+            CancelActiveMovement()
+            Log("Auto Pickup movement cancelled")
+
+            -- Release the busy latch so Auto Pickup can start cleanly
+            -- the next time it is enabled.
+            IsPickingUp = false
+
+            Toast(
+                "Auto Pickup",
+                "Disabled • movement stopped"
+            )
         end
     end
 })
 
-FarmLeft:CreateToggle({
-    name = "Auto Farm Fish",
-    flag = "AutoFarmFish",
-    value = false,
-    callback = function(Value)
-        Settings.AutoFarmFish = Value
+local BackpackEggOptions =
+    GetBackpackEggNames()
 
-        if Value then
-            StartFishFarm()
-            Log("Auto Farm Fish enabled.")
-        else
-            StopFishFarm()
-            Log("Auto Farm Fish disabled.")
-        end
-    end
-})
-
-FarmLeft:CreateDropdown({
-    name = "Fish Farm Mode",
-    options = { "Highest Price", "Rarity" },
-    value = "Highest Price",
-    flag = "FishFarmMode",
-    callback = function(Value)
-        Settings.FishFarmMode = Value
-        Log("Farm mode: " .. tostring(Value))
-    end
-})
-
-local FarmRarityOptions = { "Any" }
-for _, Rarity in ipairs(FishRarities) do
-    table.insert(FarmRarityOptions, Rarity)
+if #BackpackEggOptions == 0 then
+    BackpackEggOptions = {
+        "No Eggs Found"
+    }
 end
 
-FarmLeft:CreateDropdown({
-    name = "Fish Rarity",
-    description = "Used when Fish Farm Mode is set to Rarity.",
-    options = FarmRarityOptions,
-    value = "Any",
-    flag = "FishRarity",
-    callback = function(Value)
-        Settings.FishRarity = Value
-    end
-})
+local PlaceEggDropdown =
+    EggsTab:CreateDropdown({
+        name = "Place Egg Types",
+        options = BackpackEggOptions,
+        value = {},
+        multiSelect = true,
+        flag = "SelectedPlaceEggs",
 
-FarmRight:CreateSection({ name = "Timing" })
+        callback = function(Value)
+            Settings.SelectedPlaceEggs =
+                NormalizeNameSelection(Value)
 
-FarmRight:CreateSlider({
-    name = "Water Interval",
-    range = { 0.05, 0.50 },
-    increment = 0.05,
-    value = 0.10,
-    suffix = "s",
-    flag = "WaterInterval",
-    callback = function(Value)
-        Settings.WaterInterval = Value
-    end
-})
+            Settings.SelectedPlaceEggs["No Eggs Found"] = nil
 
-FarmRight:CreateSlider({
-    name = "Stage Drain Timeout",
-    description = "If a new stage takes longer than this, the farm returns to the last completed stage.",
-    range = { 2, 60 },
-    increment = 1,
-    value = 10,
-    suffix = "s",
-    flag = "StageDrainTimeout",
-    callback = function(Value)
-        Settings.StageDrainTimeout = Value
-    end
-})
+            Toast(
+                "Place Eggs",
+                GetSelectedNameText(
+                    Settings.SelectedPlaceEggs
+                )
+            )
 
-FarmRight:CreateSlider({
-    name = "Fish Pickup Delay",
-    description = "Delay after each successful fish pickup.",
-    range = { 0.05, 1 },
-    increment = 0.05,
-    value = 0.15,
-    suffix = "s",
-    flag = "FishPickupDelay",
-    callback = function(Value)
-        Settings.FishPickupDelay = Value
-    end
-})
-
---============================================================
--- Inventory tab
---============================================================
-
-local InventoryGrid = InventoryTab:CreateGroup()
-local InventoryLeft = InventoryGrid:CreateGroup({ direction = "column" })
-local InventoryRight = InventoryGrid:CreateGroup({ direction = "column" })
-
-InventoryLeft:CreateSection({ name = "Automation" })
-
-InventoryLeft:CreateToggle({
-    name = "Auto Home When Full",
-    flag = "AutoHomeWhenFull",
-    value = false,
-    callback = function(Value)
-        Settings.AutoHome = Value
-        BackpackFullHandled = false
-        BackpackSequenceBusy = false
-
-        if Value then
-            StartBackpackWatcher()
-            CheckBackpack()
-            Log("Auto Home enabled.")
-        else
-            StopBackpackWatcher()
-            Log("Auto Home disabled.")
+            Log(
+                "Place egg types: "
+                    .. GetSelectedNameText(
+                        Settings.SelectedPlaceEggs
+                    )
+            )
         end
-    end
-})
+    })
 
-InventoryLeft:CreateToggle({
-    name = "Auto Sell All Fish",
-    flag = "AutoSellFish",
-    value = false,
-    callback = function(Value)
-        Settings.AutoSellFish = Value
-        Log("Auto Sell: " .. tostring(Value))
-    end
-})
 
-InventoryLeft:CreateDropdown({
-    name = "Sell Lock Rarity",
-    description = "Keeps the selected rarity and higher rarities during Sell All.",
-    options = SellLockRarities,
-    value = "OFF",
-    flag = "SellLockRarity",
-    callback = function(Value)
-        Settings.SellLockRarity = Value
-        ApplySellLockRarity()
-        Log("Sell lock: " .. tostring(Value))
-    end
-})
+local function RefreshPlaceEggDropdown()
+    local Options =
+        GetBackpackEggNames()
 
-InventoryRight:CreateSection({ name = "Manual Actions" })
-
-InventoryRight:CreateButton({
-    name = "Teleport Home",
-    callback = function()
-        local Success = TeleportHome()
-        Log("Teleport Home: " .. tostring(Success))
-        Toast("Teleport Home", Success and "Moved to home target." or "Home target was unavailable.")
-    end
-})
-
-InventoryRight:CreateButton({
-    name = "Equip Best Fish",
-    callback = function()
-        local Success = EquipBestFish()
-        Log("Equip Best Fish: " .. tostring(Success))
-        Toast("Best Fish", Success and "Equip request completed." or "Equip request failed.")
-    end
-})
-
-InventoryRight:CreateButton({
-    name = "Sell All Now",
-    callback = function()
-        task.spawn(function()
-            local Success = SellAllFish()
-            Log("Manual Sell All: " .. tostring(Success))
-            Toast("Sell All", Success and "Sell request completed." or "Sell request failed.")
-        end)
-    end
-})
-
-InventoryRight:CreateSlider({
-    name = "Teleport Delay",
-    range = { 0.10, 2 },
-    increment = 0.05,
-    value = 0.35,
-    suffix = "s",
-    flag = "TeleportDelay",
-    callback = function(Value)
-        Settings.TeleportDelay = Value
-    end
-})
-
-InventoryRight:CreateSlider({
-    name = "Best Fish Delay",
-    range = { 0.10, 2 },
-    increment = 0.05,
-    value = 0.35,
-    suffix = "s",
-    flag = "BestFishDelay",
-    callback = function(Value)
-        Settings.BestFishDelay = Value
-    end
-})
-
---============================================================
--- Eggs tab
---============================================================
-
-local EggDropdownOptions = GetEggDropdownOptions()
-local DefaultEgg = "Egg 4"
-local FoundEgg4 = false
-
-for _, Option in ipairs(EggDropdownOptions) do
-    if Option == "Egg 4" then
-        FoundEgg4 = true
-        break
-    end
-end
-
-if not FoundEgg4 then
-    DefaultEgg = EggDropdownOptions[1]
-end
-
-Settings.EggId = tonumber(DefaultEgg:match("%d+")) or 4
-
-local EggGrid = EggsTab:CreateGroup()
-local EggLeft = EggGrid:CreateGroup({ direction = "column" })
-local EggRight = EggGrid:CreateGroup({ direction = "column" })
-
-local EggDropdown = EggLeft:CreateDropdown({
-    name = "Egg",
-    description = "Choose which egg Auto Open uses.",
-    options = EggDropdownOptions,
-    value = DefaultEgg,
-    flag = "SelectedEgg",
-    callback = function(Value)
-        local ID = tonumber(tostring(Value):match("%d+"))
-        if ID then
-            Settings.EggId = ID
-            Log("Selected Egg " .. ID)
-        end
-    end
-})
-
-EggLeft:CreateToggle({
-    name = "Egg Auto Delete",
-    flag = "EggAutoDelete",
-    value = true,
-    callback = function(Value)
-        Settings.EggAutoDelete = Value
-    end
-})
-
-EggLeft:CreateToggle({
-    name = "Auto Open Egg",
-    flag = "AutoOpenEgg",
-    value = false,
-    callback = function(Value)
-        Settings.AutoOpenEgg = Value
-
-        if Value then
-            StartAutoOpenEgg()
-            Log("Auto Open Egg enabled.")
-        else
-            StopAutoOpenEgg()
-            Log("Auto Open Egg disabled.")
-        end
-    end
-})
-
-EggRight:CreateDropdown({
-    name = "Open Amount",
-    description = "Amount requested per egg-open call.",
-    options = { "1", "3" },
-    value = "3",
-    flag = "EggOpenAmount",
-    callback = function(Value)
-        Settings.EggOpenAmount = tonumber(Value) or 3
-    end
-})
-
-EggRight:CreateSlider({
-    name = "Egg Open Delay",
-    description = "Delay between open requests.",
-    range = { 0.05, 2 },
-    increment = 0.05,
-    value = 0.15,
-    suffix = "s",
-    flag = "EggOpenDelay",
-    callback = function(Value)
-        Settings.EggOpenDelay = Value
-    end
-})
-
-local function RefreshEggDropdown()
-    if not EggDropdown then
-        return
+    if #Options == 0 then
+        Options = {
+            "No Eggs Found"
+        }
     end
 
     pcall(function()
-        EggDropdown:Refresh(GetEggDropdownOptions())
+        PlaceEggDropdown:Refresh(Options)
     end)
 end
 
-TrackConnection(EggZoneFolder.ChildAdded:Connect(function()
-    task.wait(0.1)
-    RefreshEggDropdown()
-end))
 
-TrackConnection(EggZoneFolder.ChildRemoved:Connect(function()
-    task.wait(0.1)
-    RefreshEggDropdown()
-end))
+Backpack.ChildAdded:Connect(function()
+    task.defer(RefreshPlaceEggDropdown)
+end)
 
---============================================================
--- Purchases tab
---============================================================
+Backpack.ChildRemoved:Connect(function()
+    task.defer(RefreshPlaceEggDropdown)
+end)
 
-local PurchaseGrid = PurchasesTab:CreateGroup()
-local PurchaseLeft = PurchaseGrid:CreateGroup({ direction = "column" })
-local PurchaseRight = PurchaseGrid:CreateGroup({ direction = "column" })
 
-PurchaseLeft:CreateSection({ name = "Cash" })
+EggsTab:CreateButton({
+    name = "Refresh Backpack Egg List",
 
-PurchaseLeft:CreateToggle({
-    name = "Auto Collect Cash",
-    flag = "AutoCollectCash",
-    value = false,
-    callback = function(Value)
-        Settings.AutoCollectCash = Value
+    callback = function()
+        RefreshPlaceEggDropdown()
 
-        if Value then
-            StartAutoCollectCash()
-            Log("Auto Collect Cash enabled.")
-        else
-            StopAutoCollectCash()
-            Log("Auto Collect Cash disabled.")
-        end
+        Toast(
+            "Backpack Eggs",
+            "Egg list refreshed"
+        )
     end
 })
 
-PurchaseLeft:CreateSlider({
-    name = "Cash Collect Delay",
-    range = { 1, 60 },
-    increment = 1,
-    value = 10,
+
+EggToggleRow:CreateToggle({
+    name = "Auto Place Egg",
+    value = false,
+    flag = "AutoPlaceEgg",
+
+    callback = function(Value)
+        Settings.AutoPlaceEgg = Value
+
+        Log(
+            "Auto Place Egg: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Auto Place Egg",
+            Value
+                and "Watching Backpack"
+                or "Disabled"
+        )
+    end
+})
+
+
+local EggAutomationDelayRow = EggsTab:CreateGroup()
+
+EggAutomationDelayRow:CreateSlider({
+    name = "Auto Place Delay",
+    range = { 0.05, 1.5 },
+    increment = 0.05,
+    value = 0.20,
     suffix = "s",
-    flag = "CashCollectDelay",
+    flag = "AutoPlaceDelay",
+
     callback = function(Value)
-        Settings.CashCollectDelay = Value
+        Settings.AutoPlaceDelay = Value
     end
 })
 
-PurchaseRight:CreateSection({ name = "Purchases" })
 
-PurchaseRight:CreateToggle({
-    name = "Auto Buy Best Aura",
-    flag = "AutoBuyBestAura",
+EggsTab:CreateDivider({
+    text = "Auto Hatch"
+})
+
+
+EggToggleRow:CreateToggle({
+    name = "Auto Hatch",
     value = false,
-    callback = function(Value)
-        Settings.AutoBuyBestAura = Value
+    flag = "AutoHatch",
 
-        if Value then
-            RefreshAuraTarget()
-            CheckAuraCash()
-            Log("Auto Aura purchases enabled.")
-        else
-            CurrentAuraTarget = nil
-            Log("Auto Aura purchases disabled.")
-        end
+    callback = function(Value)
+        Settings.AutoHatch = Value
+
+        Log(
+            "Auto Hatch: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Auto Hatch",
+            Value
+                and "Watching all ready eggs"
+                or "Disabled"
+        )
     end
 })
 
-PurchaseRight:CreateToggle({
-    name = "Auto Buy Best Water Pump",
-    flag = "AutoBuyBestPump",
-    value = false,
-    callback = function(Value)
-        Settings.AutoBuyBestPump = Value
 
-        if Value then
-            RefreshPumpTarget()
-            CheckPumpCash()
-            Log("Auto Pump purchases enabled.")
-        else
-            CurrentPumpTarget = nil
-            Log("Auto Pump purchases disabled.")
-        end
+EggAutomationDelayRow:CreateSlider({
+    name = "Auto Hatch Delay",
+    range = { 0.05, 1.5 },
+    increment = 0.05,
+    value = 0.20,
+    suffix = "s",
+    flag = "AutoHatchDelay",
+
+    callback = function(Value)
+        Settings.AutoHatchDelay = Value
     end
 })
 
-PurchaseRight:CreateToggle({
-    name = "Auto Buy Upgrades",
-    flag = "AutoBuyUpgrades",
+
+local HatchLuckUpgradeRow = EggsTab:CreateGroup()
+
+HatchLuckUpgradeRow:CreateToggle({
+    name = "Auto Hatch Luck Upgrade",
     value = false,
+    flag = "AutoHatchLuckUpgrade",
+
     callback = function(Value)
-        Settings.AutoBuyUpgrades = Value
+        Settings.AutoHatchLuckUpgrade = Value
 
-        if Value then
-            CheckUpgradeCash()
-            Log("Auto Upgrade purchases enabled.")
-        else
-            Log("Auto Upgrade purchases disabled.")
-        end
-    end
-})
+        Log(
+            "Auto Hatch Luck Upgrade: "
+                .. tostring(Value)
+        )
 
---============================================================
--- Progression tab
---============================================================
-
-ProgressionTab:CreateToggle({
-    name = "Auto Rebirth",
-    flag = "AutoRebirth",
-    value = false,
-    callback = function(Value)
-        Settings.AutoRebirth = Value
-        RebirthBusy = false
-        LastRebirthText = nil
-
-        if Value then
-            TryAutoRebirth()
-            Log("Auto Rebirth enabled.")
-        else
-            Log("Auto Rebirth disabled.")
-        end
-    end
-})
-
-local RebirthStatusText = ProgressionTab:CreateText({
-    name = "Current Rebirth Progress",
-    text = tostring(RebirthProgressLabel.Text)
-})
-
-TrackConnection(RebirthProgressLabel:GetPropertyChangedSignal("Text"):Connect(function()
-    RebirthStatusText:Set(tostring(RebirthProgressLabel.Text))
-end))
-
---============================================================
--- Settings tab
---============================================================
-
-SettingsTab:CreateSection({ name = "Player" })
-
-SettingsTab:CreateToggle({
-    name = "Anti AFK",
-    flag = "AntiAFK",
-    value = false,
-    forgetState = true,
-    callback = function(Value)
-
-        if Value then
-
-            StartAntiAFK()
-
-            Log("Anti AFK enabled.")
-
-            Toast(
-                "Anti AFK",
-                "Enabled. Idle events will be prevented."
+        if Value
+            and LocalPlayer:GetAttribute("Setting_LuckMultiplier") == false
+        then
+            Notify(
+                "Hatch Luck Upgrade",
+                "Turn on the game's Luck Multiplier setting first.",
+                5
             )
-
         else
-
-            StopAntiAFK()
-
-            Log("Anti AFK disabled.")
-
             Toast(
-                "Anti AFK",
-                "Disabled."
+                "Hatch Luck Upgrade",
+                Value
+                    and "Watching cash"
+                    or "Disabled"
             )
-
         end
     end
 })
 
-SettingsTab:CreateDivider({ text = "Appearance" })
+HatchLuckUpgradeRow:CreateSlider({
+    name = "Luck Upgrade Delay",
+    range = { 0.10, 2.00 },
+    increment = 0.05,
+    value = 0.35,
+    suffix = "s",
+    flag = "HatchLuckUpgradeDelay",
 
-local AppearanceGrid = SettingsTab:CreateGroup()
-local AppearanceLeft = AppearanceGrid:CreateGroup({ direction = "column" })
-local AppearanceRight = AppearanceGrid:CreateGroup({ direction = "column" })
+    callback = function(Value)
+        Settings.HatchLuckUpgradeDelay = Value
+    end
+})
 
-AppearanceLeft:CreateDropdown({
+
+local EggMovementRow = EggsTab:CreateGroup()
+
+EggMovementRow:CreateSlider({
+    name = "Search Delay",
+    range = { 0.05, 2 },
+    increment = 0.05,
+    value = 0.25,
+    suffix = "s",
+    flag = "SearchDelay",
+
+    callback = function(Value)
+        Settings.SearchDelay = Value
+    end
+})
+
+EggMovementRow:CreateSlider({
+    name = "Tween Speed",
+    range = { 25, 500 },
+    increment = 5,
+    value = 120,
+    suffix = " studs/s",
+    flag = "TweenSpeed",
+
+    callback = function(Value)
+        Settings.TweenSpeed = Value
+        Log("Tween speed: " .. tostring(Value))
+    end
+})
+
+
+
+
+
+
+
+
+--// ============================================================
+--// PETS TAB
+--// ============================================================
+
+PetsTab:CreateDropdown({
+    name = "Pet Food",
+    options = PetFoodOptions,
+    value = { "Grass" },
+    multiSelect = true,
+    flag = "SelectedPetFoods",
+
+    callback = function(Value)
+        Settings.SelectedPetFoods =
+            NormalizeNameSelection(Value)
+
+        Toast(
+            "Pet Food",
+            GetSelectedPetFoodText()
+        )
+
+        Log(
+            "Selected pet foods: "
+                .. GetSelectedPetFoodText()
+        )
+    end
+})
+
+
+local PetAutomationRow = PetsTab:CreateGroup()
+
+PetAutomationRow:CreateToggle({
+    name = "Auto Place Best Pets",
+    value = false,
+    flag = "AutoPlaceBestPets",
+
+    callback = function(Value)
+        Settings.AutoPlaceBestPets =
+            Value
+
+        Log(
+            "Auto Place Best Pets: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Best Pets",
+            Value
+                and "Automation enabled"
+                or "Automation disabled"
+        )
+    end
+})
+
+PetAutomationRow:CreateSlider({
+    name = "Best Pets Check Delay",
+    range = { 0.5, 10 },
+    increment = 0.5,
+    value = 2,
+    suffix = "s",
+    flag = "BestPetsCheckDelay",
+
+    callback = function(Value)
+        Settings.BestPetsCheckDelay =
+            Value
+    end
+})
+
+PetAutomationRow:CreateToggle({
+    name = "Auto Sell Pets",
+    value = false,
+    flag = "AutoSellPets",
+
+    callback = function(Value)
+        Settings.AutoSellPets = Value
+
+        Log(
+            "Auto Sell Pets: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Auto Sell Pets",
+            Value
+                and "Will sell leftovers after Best Pets finishes"
+                or "Disabled"
+        )
+    end
+})
+
+local PetFeedRow = PetsTab:CreateGroup()
+
+PetFeedRow:CreateToggle({
+    name = "Auto Feed Best Pets",
+    value = false,
+    flag = "AutoFeedBestPets",
+
+    callback = function(Value)
+        Settings.AutoFeedBestPets = Value
+
+        Log(
+            "Auto Feed Best Pets: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Auto Feed Best Pets",
+            Value
+                and (
+                    "Using "
+                    .. GetSelectedPetFoodText()
+                )
+                or "Disabled"
+        )
+    end
+})
+
+PetFeedRow:CreateSlider({
+    name = "Feed Delay",
+    range = { 0.5, 15 },
+    increment = 0.5,
+    value = 2,
+    suffix = "s",
+    flag = "AutoFeedBestPetsDelay",
+
+    callback = function(Value)
+        Settings.AutoFeedBestPetsDelay = Value
+    end
+})
+
+
+
+
+
+
+--// ============================================================
+--// SETTINGS TAB
+--// ============================================================
+
+
+local SettingsDropdownGrid = SettingsTab:CreateGroup()
+
+local ThemeColumn =
+    SettingsDropdownGrid:CreateGroup({
+        direction = "column"
+    })
+
+local LanguageColumn =
+    SettingsDropdownGrid:CreateGroup({
+        direction = "column"
+    })
+
+ThemeColumn:CreateDropdown({
     name = "Theme",
-    options = { "default", "cobalt", "ember", "amethyst", "frost", "rose" },
+    options = ThemeOptions,
     value = "cobalt",
+    multiSelect = false,
     flag = "Theme",
+
     callback = function(Value)
-        Window:ChangeTheme(Value)
-        Log("Theme changed to " .. tostring(Value))
+        pcall(function()
+            Window:ChangeTheme(Value)
+        end)
+
+        Log("Theme: " .. tostring(Value))
     end
 })
 
-AppearanceRight:CreateDropdown({
+LanguageColumn:CreateDropdown({
     name = "Language",
-    options = { "English", "Español" },
+    options = {
+        "English",
+        "Español",
+    },
     value = "English",
+    multiSelect = false,
     flag = "Language",
+
     callback = function(Value)
-        Window:SetLocale(Value == "Español" and "es" or "en")
-    end
-})
-
-SettingsTab:CreateInput({
-    name = "Sidebar Profile",
-    description = "Change the small profile line shown at the bottom of the sidebar.",
-    value = "Fishing Automation",
-    placeholder = "Profile text",
-    flag = "SidebarProfile",
-    callback = function(Text)
-        if tostring(Text) == "" then
-            Window:SetProfile(nil)
+        if Value == "Español" then
+            pcall(function()
+                Window:SetLocale("es")
+            end)
         else
-            Window:SetProfile(tostring(Text))
+            pcall(function()
+                Window:SetLocale("en")
+            end)
         end
+
+        Log("Language: " .. tostring(Value))
     end
 })
 
-SettingsTab:CreateKeybind({
-    name = "Emergency Stop Key",
-    description = "Press this key at any time to turn every automation toggle off.",
-    value = Enum.KeyCode.P,
-    flag = "EmergencyStopKey",
+
+
+
+local UtilityRow = SettingsTab:CreateGroup()
+
+UtilityRow:CreateToggle({
+    name = "Anti AFK",
+    value = true,
+    flag = "AntiAFK",
+
+    callback = function(Value)
+        Settings.AntiAFK = Value
+
+        Log(
+            "Anti AFK: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Anti AFK",
+            Value
+                and "Enabled"
+                or "Disabled"
+        )
+    end
+})
+
+
+local OffsetRow = SettingsTab:CreateGroup()
+
+OffsetRow:CreateSlider({
+    name = "Egg Height Offset",
+    range = { 0, 8 },
+    increment = 0.25,
+    value = 2.5,
+    suffix = " studs",
+    flag = "EggOffsetY",
+
+    callback = function(Value)
+        Settings.EggOffsetY = Value
+    end
+})
+
+OffsetRow:CreateSlider({
+    name = "Egg Forward Offset",
+    range = { -5, 5 },
+    increment = 0.25,
+    value = 2,
+    suffix = " studs",
+    flag = "EggOffsetZ",
+
+    callback = function(Value)
+        Settings.EggOffsetZ = Value
+    end
+})
+
+OffsetRow:CreateSlider({
+    name = "Plot Height Offset",
+    range = { 1, 12 },
+    increment = 0.5,
+    value = 5,
+    suffix = " studs",
+    flag = "PlotOffsetY",
+
+    callback = function(Value)
+        Settings.PlotOffsetY = Value
+    end
+})
+
+SettingsTab:CreateButton({
+    name = "Show Current Selection",
+
     callback = function()
-        StopAllAutomation()
-    end,
-    onChanged = function(Key)
-        Log("Emergency stop key changed to " .. tostring(Key))
+        Notify(
+            "Current Selection",
+            "Luck: " .. GetSelectedLuckText()
+                .. "\nTween Speed: " .. tostring(Settings.TweenSpeed)
+                .. " studs/s",
+            4
+        )
     end
 })
 
-SettingsTab:CreateColorPicker({
-    name = "Status Tag Color",
-    description = "Changes the ACTIVE status tag color used by the dashboard.",
-    color = Color3.fromRGB(65, 190, 120),
-    alpha = 1,
-    flag = "StatusTagColor",
-    callback = function(Color)
-        if CountActiveAutomation() > 0 then
-            StatusTag:SetColor(Color)
-        end
-    end
-})
-
-SettingsTab:CreateDivider({ text = "Configuration" })
-
-local ConfigActions = SettingsTab:CreateGroup()
-
-ConfigActions:CreateButton({
-    name = "Save",
-    callback = function()
-        if Window:Save() then
-            Toast("Configuration saved", "Your current values were written to disk.")
-            Log("Configuration saved manually.")
-        end
-    end
-})
-
-ConfigActions:CreateButton({
-    name = "Load",
-    callback = function()
-        if Window:Load() then
-            Toast("Configuration loaded", "Saved values were restored.")
-            Log("Configuration loaded manually.")
-        end
-    end
-})
-
-ConfigActions:CreateButton({
-    name = "Changelog",
-    callback = function()
-        Window:Popup({
-            title = "Fishing Hub",
-            subtitle = "Polished Rayfield Gen2 build",
-            boxes = {
-                {
-                    title = "New sidebar layout",
-                    description = "Farm, inventory, eggs, purchases, progression, settings, and diagnostics now have their own pages."
-                },
-                {
-                    title = "Live dashboard",
-                    description = "Backpack, capacity, cash, stage count, active automations, and runtime update live."
-                },
-                {
-                    title = "Secure Mode",
-                    description = "RAYFIELD_SECURE is enabled before the Gen2 loader executes."
-                },
-                {
-                    title = "Safer lifecycle",
-                    description = "Re-executing the script unloads the previous instance, and an emergency stop can disable every automation at once."
-                },
-                {
-                    title = "More controls",
-                    description = "Previously hidden timing values are now configurable from the UI."
-                }
-            },
-            options = {
-                { text = "Got it", style = "primary" }
-            }
-        })
-    end
-})
-
-SettingsTab:CreateDivider({ text = "Window" })
-
-local WindowActions = SettingsTab:CreateGroup()
-
-WindowActions:CreateButton({
-    name = "Hide",
-    callback = function()
-        Window:Hide()
-    end
-})
-
-WindowActions:CreateButton({
-    name = "Minimise",
-    callback = function()
-        Window:ToggleMinimise()
-    end
-})
-
-WindowActions:CreateButton({
-    name = "Unload Hub",
-    description = "Stops all features and removes the interface.",
-    callback = function()
-        Window:Popup({
-            title = "Unload Fishing Hub?",
-            content = "All automation will stop and the interface will be destroyed.",
-            options = {
-                { text = "Cancel" },
-                {
-                    text = "Unload",
-                    style = "danger",
-                    callback = function()
-                        if getgenv().__FISHING_HUB_UNLOAD == UnloadHub then
-                            getgenv().__FISHING_HUB_UNLOAD = nil
-                        end
-                        UnloadHub()
-                    end
-                }
-            }
-        })
-    end
-})
-
---============================================================
--- Diagnostics tab
---============================================================
-
-DiagnosticsTab:CreateDivider({ text = "Environment" })
-
-DiagnosticsTab:CreateText({
-    name = "Secure Mode",
-    text = "Enabled before Rayfield initialization. No raw marketplace icons are used by this script."
-})
-
-DiagnosticsTab:CreateText({
-    name = "Config",
-    text = "Rayfield/Configurations/FishingHub/FishingHub.rfld"
-})
+--// ============================================================
+--// DIAGNOSTICS TAB
+--// ============================================================
 
 local DiagnosticActions = DiagnosticsTab:CreateGroup()
 
 DiagnosticActions:CreateButton({
-    name = "Snapshot",
+    name = "Print Matching Eggs",
+
     callback = function()
-        local Amount, Capacity = GetBackpackNumbers()
-        Log("Snapshot | Backpack " .. Amount .. "/" .. Capacity)
-        Log("Snapshot | Cash " .. tostring(CashValue.Value))
-        Log("Snapshot | Stages " .. tostring(#GetStages()))
-        Log("Snapshot | Active automation " .. tostring(CountActiveAutomation()))
-        Log("Snapshot | Anti AFK " .. (Settings.AntiAFK and "ON" or "OFF"))
+        local Matches = GetMatchingSelectedEggs()
+
+        Log(
+            "Matching selected lucks (" .. GetSelectedLuckText() .. ")"
+                .. ": "
+                .. tostring(#Matches)
+        )
+
+        for Index, Info in ipairs(Matches) do
+            print(
+                Index,
+                Info.Egg:GetFullName(),
+                Info.Prompt:GetFullName()
+            )
+        end
+    end
+})
+
+DiagnosticActions:CreateButton({
+    name = "Print My Plot",
+
+    callback = function()
+        local Plot = GetPlayerPlot()
+
+        Log(
+            "Plot: "
+                .. tostring(
+                    Plot and Plot:GetFullName()
+                    or "NONE"
+                )
+        )
+    end
+})
+
+DiagnosticActions:CreateButton({
+    name = "Test Notification",
+
+    callback = function()
+        Notify(
+            "Shadow Garden",
+            "Rayfield Gen2 notification system is working.",
+            4
+        )
+    end
+})
+
+DiagnosticActions:CreateButton({
+    name = "Test Toast",
+
+    callback = function()
+        Toast(
+            "Shadow Garden",
+            "Toast system is working."
+        )
     end
 })
 
 DiagnosticActions:CreateButton({
     name = "Clear Console",
+
     callback = function()
-        DebugConsole:Clear()
+        pcall(function()
+            DebugConsole:Clear()
+        end)
     end
 })
 
-DiagnosticActions:CreateButton({
-    name = "Copy Console",
+DiagnosticsTab:CreateButton({
+    name = "Changelog",
+
     callback = function()
-        if DebugConsole:Copy() then
-            Toast("Console copied", "Diagnostic output copied to clipboard.")
-        else
-            Toast("Clipboard unavailable", "This executor did not expose setclipboard.")
-        end
+        Window:Popup({
+            title = "Shadow Garden",
+            subtitle = "Egg Hub",
+
+            boxes = {
+                {
+                    title = "Tween Movement",
+                },
+                {
+                    title = "Auto Pickup",
+                },
+                {
+                    title = "Multi-Select Luck",
+                },
+                {
+                    title = "Independent Auto Place",
+                },
+                {
+                    title = "Auto Hatch",
+                },
+                {
+                    title = "Auto Hatch Luck Upgrade",
+                },
+                {
+                    title = "Auto Place Best Pets",
+                },
+                {
+                    title = "Dynamic Plot Detection",
+                },
+                {
+                    title = "Gen2 Interface",
+                },
+            },
+
+            options = {
+                {
+                    text = "Close",
+                    style = "primary",
+                },
+            },
+        })
     end
 })
 
---============================================================
--- Live dashboard updater
---============================================================
+--// ============================================================
+--// UNLOAD
+--// ============================================================
 
-local function RefreshDashboard()
-    local Amount, Capacity = GetBackpackNumbers()
-    local Active = CountActiveAutomation()
+local function UnloadHub()
+    HubRunning = false
+    Settings.AutoPickup = false
+    Settings.AutoPlaceEgg = false
+    Settings.AutoHatch = false
+    Settings.AutoHatchLuckUpgrade = false
+    Settings.AutoPlaceBestPets = false
+    Settings.AutoSellPets = false
+    Settings.AutoFeedBestPets = false
+    Settings.AntiAFK = false
 
-    BackpackAmountStat:Set(Amount)
-    BackpackCapacityStat:Set(Capacity)
-    CashStat:Set(tonumber(CashValue.Value) or 0)
-    ActiveStat:Set(Active)
-    StageStat:Set(#GetStages())
-    RuntimeStat:Set(math.floor(os.clock() - SessionStarted))
-
-    if Active > 0 then
-        local SavedColor = Window:Get("StatusTagColor")
-        local ActiveColor = typeof(SavedColor) == "Color3"
-            and SavedColor
-            or Color3.fromRGB(65, 190, 120)
-
-        StatusTag:Set({
-            text = "ACTIVE " .. tostring(Active),
-            color = ActiveColor
-        })
-
-        SessionSummary:Set(
-            tostring(Active)
-            .. " automation feature"
-            .. (Active == 1 and " is" or "s are")
-            .. " currently enabled."
-        )
-    else
-        StatusTag:Set({
-            text = "IDLE",
-            color = Color3.fromRGB(115, 120, 135)
-        })
-
-        SessionSummary:Set("No automation is currently active.")
+    if AntiAFKConnection then
+        AntiAFKConnection:Disconnect()
+        AntiAFKConnection = nil
     end
+
+    CancelActiveMovement()
+
+    pcall(function()
+        Window:Unload()
+    end)
+
+    getgenv().__SHADOW_GARDEN_UNLOAD = nil
 end
 
-TrackConnection(AmountValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
-TrackConnection(CapacityValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
-TrackConnection(CashValue:GetPropertyChangedSignal("Value"):Connect(RefreshDashboard))
+getgenv().__SHADOW_GARDEN_UNLOAD = UnloadHub
 
-local DashboardLoopID = 1
+SettingsTab:CreateButton({
+    name = "Unload Hub",
+    callback = UnloadHub
+})
+
+--// ============================================================
+--// STARTUP
+--// ============================================================
 
 task.spawn(function()
-    local ID = DashboardLoopID
+    task.wait(1)
 
-    while HubRunning and ID == DashboardLoopID and not Window.unloaded do
-        RefreshDashboard()
-        task.wait(0.5)
-    end
+    local Plot = GetPlayerPlot()
+
+    Notify(
+        "Shadow Garden",
+        "Loaded successfully."
+            .. "\nSelected Luck: "
+            .. GetSelectedLuckText()
+            .. "\nPlot: "
+            .. tostring(
+                Plot and Plot.Name
+                or "Waiting..."
+            ),
+        6
+    )
+
+    Log("Shadow Garden loaded")
 end)
-
---============================================================
--- Startup
---============================================================
-
-local StartAmount, StartCapacity = GetBackpackNumbers()
-
-Log("Secure Mode: ENABLED")
-Log("Rayfield Gen2 loaded.")
-Log("Backpack: " .. StartAmount .. "/" .. StartCapacity)
-Log("Cash: " .. tostring(CashValue.Value))
-Log("Stages: " .. tostring(#GetStages()))
-Log("Eggs: " .. table.concat(GetEggDropdownOptions(), ", "))
-Log("Anti AFK: ready")
-
-RefreshDashboard()
-
-Window:Toast({
-    title = "Fishing Hub ready",
-    subtitle = "Polished Gen2 interface loaded securely.",
-    duration = 4
-})
