@@ -99,6 +99,7 @@ local DialogueSelectEvent =
         :WaitForChild("Remotes")
         :WaitForChild("DialogueSelect")
 
+
 --// ============================================================
 --// RAYFIELD
 --// ============================================================
@@ -176,7 +177,10 @@ local Settings = {
     -- Backpack egg placement is independent from Auto Pickup.
     AutoPlaceEgg = false,
     AutoPlaceDelay = 0.20,
-    SelectedPlaceEggs = {},
+    SelectedPlaceEggs = {
+        ["Cherub Egg"] = true,
+        ["Blackhole Egg"] = true,
+    },
 
     -- Auto hatch placed eggs once their Hatch prompt is enabled.
     AutoHatch = false,
@@ -190,15 +194,17 @@ local Settings = {
     AutoPlaceBestPets = false,
     BestPetsCheckDelay = 2.0,
 
-    -- Automatically use Richie's pet-selling dialogue when pet tools exist.
-    AutoSellPets = false,
-
     -- Automatically feed the current best pets.
     AutoFeedBestPets = false,
     SelectedPetFoods = {
         Grass = true,
     },
     AutoFeedBestPetsDelay = 2.0,
+
+    -- Sell pet Tools one-by-one when they are below the selected weight.
+    AutoSellUnderWeight = false,
+    SellWeightThreshold = 10.0,
+    AutoSellPetDelay = 0.75,
 
     -- Keeps the client active when Roblox fires LocalPlayer.Idled.
     AntiAFK = true,
@@ -356,8 +362,8 @@ local Window = Rayfield:CreateWindow({
             ["Auto Hatch"] = "Eclosión automática",
             ["Auto Hatch Luck Upgrade"] = "Mejorar suerte de eclosión automáticamente",
             ["Auto Place Best Pets"] = "Colocar mejores mascotas automáticamente",
-            ["Auto Sell Pets"] = "Vender mascotas automáticamente",
             ["Auto Feed Best Pets"] = "Alimentar mejores mascotas automáticamente",
+            ["Auto Sell Under Weight"] = "Vender mascotas por debajo del peso",
             ["Egg Luck"] = "Suerte del huevo",
             ["Theme"] = "Tema",
             ["Language"] = "Idioma",
@@ -981,6 +987,35 @@ local function IsEggTool(Tool)
 end
 
 
+local PreferredEggPriority = {
+    ["Cherub Egg"] = 1,
+    ["Blackhole Egg"] = 2,
+}
+
+
+local function GetEggWeight(Tool)
+    if not Tool then
+        return 0
+    end
+
+    local Weight =
+        tonumber(Tool:GetAttribute("Weight"))
+        or tonumber(Tool:GetAttribute("BaseWeight"))
+
+    if Weight then
+        return Weight
+    end
+
+    -- Fallback for tools whose weight is embedded in the display name.
+    local FromName =
+        tostring(Tool.Name):match(
+            "%[([%d%.]+)%s*[Kk][Gg]%]"
+        )
+
+    return tonumber(FromName) or 0
+end
+
+
 local function GetBackpackEggNames()
     local Seen = {}
     local Names = {}
@@ -1061,27 +1096,53 @@ end
 
 
 local function FindSelectedEggTool(Selection)
-    local Character = LocalPlayer.Character
+    local Candidates = {}
 
-    -- Prefer an already equipped selected egg.
-    if Character then
-        for _, Child in ipairs(Character:GetChildren()) do
-            if IsEggTool(Child) and Selection[Child.Name] then
-                return Child
+    local function AddFrom(Container)
+        if not Container then
+            return
+        end
+
+        for _, Child in ipairs(Container:GetChildren()) do
+            if IsEggTool(Child)
+                and Selection[Child.Name]
+            then
+                table.insert(Candidates, Child)
             end
         end
     end
 
-    -- Otherwise pick the first selected egg in the Backpack.
-    for _, Child in ipairs(Backpack:GetChildren()) do
-        if IsEggTool(Child) and Selection[Child.Name] then
-            return Child
+    AddFrom(LocalPlayer.Character)
+    AddFrom(Backpack)
+
+    table.sort(
+        Candidates,
+        function(A, B)
+            local APriority =
+                PreferredEggPriority[A.Name] or 999
+
+            local BPriority =
+                PreferredEggPriority[B.Name] or 999
+
+            -- Cherub Egg always wins, then Blackhole Egg.
+            if APriority ~= BPriority then
+                return APriority < BPriority
+            end
+
+            -- For two eggs of the same tier, use the heavier egg first.
+            local AWeight = GetEggWeight(A)
+            local BWeight = GetEggWeight(B)
+
+            if AWeight ~= BWeight then
+                return AWeight > BWeight
+            end
+
+            return A.Name < B.Name
         end
-    end
+    )
 
-    return nil
+    return Candidates[1]
 end
-
 
 local function EquipSelectedEggTool(Selection)
     local Character = GetCharacter()
@@ -1950,6 +2011,231 @@ local function EquipFoodTool(FoodName)
 end
 
 
+local function FindPetToolForGrowth(PetKey)
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(Container:GetChildren()) do
+                if Child:IsA("Tool")
+                    and Child:GetAttribute("PetKey") == PetKey
+                then
+                    return Child
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function GetPetRendererInfo(PetKey)
+    local Success, Info =
+        pcall(function()
+            return PetRenderer.Get(
+                LocalPlayer.UserId,
+                PetKey
+            )
+        end)
+
+    if Success then
+        return Info
+    end
+
+    return nil
+end
+
+
+local function GetExportedMaxPetAge()
+    for _, Key in ipairs({
+        "MaxAge",
+        "MAX_AGE",
+        "MaximumAge",
+        "MaxLevel",
+        "MAX_LEVEL",
+    }) do
+        local Value =
+            tonumber(PetAging[Key])
+
+        if Value and Value > 0 then
+            return Value
+        end
+    end
+
+    return nil
+end
+
+
+local function HasExplicitMaxFlag(Object)
+    if not Object then
+        return false
+    end
+
+    for _, AttributeName in ipairs({
+        "Maxed",
+        "IsMaxed",
+        "MaxXP",
+        "MaxEXP",
+        "MaxLevel",
+    }) do
+        if Object:GetAttribute(AttributeName) == true then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+local function GetPetGrowthState(PetKey)
+    local Info =
+        GetPetRendererInfo(PetKey)
+
+    local Model =
+        Info and Info.Model or nil
+
+    local Tool =
+        FindPetToolForGrowth(PetKey)
+
+    if HasExplicitMaxFlag(Model)
+        or HasExplicitMaxFlag(Tool)
+    then
+        return {
+            IsMaxed = true,
+            Reason = "explicit max flag",
+        }
+    end
+
+    local BirthTime =
+        Info and Info.BirthTime
+        or (
+            Model
+            and Model:GetAttribute("BirthTime")
+        )
+        or (
+            Tool
+            and Tool:GetAttribute("BirthTime")
+        )
+
+    local Age = nil
+    local CurrentXP = nil
+    local RequiredXP = nil
+
+    if BirthTime ~= nil then
+        local Success, A, XP, Requirement =
+            pcall(
+                PetAging.StateFrom,
+                BirthTime
+            )
+
+        if Success then
+            Age = tonumber(A)
+            CurrentXP = tonumber(XP)
+            RequiredXP = tonumber(Requirement)
+        end
+    end
+
+    if Age == nil then
+        Age =
+            tonumber(
+                Model
+                and Model:GetAttribute("Age")
+            )
+            or tonumber(
+                Tool
+                and Tool:GetAttribute("Age")
+            )
+    end
+
+    if CurrentXP == nil then
+        CurrentXP =
+            tonumber(
+                Model
+                and (
+                    Model:GetAttribute("EXP")
+                    or Model:GetAttribute("XP")
+                )
+            )
+            or tonumber(
+                Tool
+                and (
+                    Tool:GetAttribute("EXP")
+                    or Tool:GetAttribute("XP")
+                )
+            )
+    end
+
+    if RequiredXP == nil and Age ~= nil then
+        local Success, Requirement =
+            pcall(
+                PetAging.RequirementFor,
+                Age
+            )
+
+        if Success then
+            RequiredXP =
+                tonumber(Requirement)
+        end
+    end
+
+    local MaxAge =
+        GetExportedMaxPetAge()
+
+    if MaxAge
+        and Age
+        and Age >= MaxAge
+    then
+        return {
+            IsMaxed = true,
+            Age = Age,
+            CurrentXP = CurrentXP,
+            RequiredXP = RequiredXP,
+            Reason = "max age",
+        }
+    end
+
+    -- A zero/negative requirement normally means there is no next
+    -- growth step left.
+    if RequiredXP ~= nil
+        and RequiredXP <= 0
+    then
+        return {
+            IsMaxed = true,
+            Age = Age,
+            CurrentXP = CurrentXP,
+            RequiredXP = RequiredXP,
+            Reason = "no next XP requirement",
+        }
+    end
+
+    -- StateFrom normalizes normal levels below their requirement.
+    -- If it reports the progress at/above the requirement and the
+    -- state does not roll into another level, treat it as capped.
+    if CurrentXP ~= nil
+        and RequiredXP ~= nil
+        and RequiredXP > 0
+        and CurrentXP >= RequiredXP
+    then
+        return {
+            IsMaxed = true,
+            Age = Age,
+            CurrentXP = CurrentXP,
+            RequiredXP = RequiredXP,
+            Reason = "XP cap reached",
+        }
+    end
+
+    return {
+        IsMaxed = false,
+        Age = Age,
+        CurrentXP = CurrentXP,
+        RequiredXP = RequiredXP,
+    }
+end
+
+
 local function GetBestPetKeys()
     if not CollectOwnedPets then
         return {}
@@ -1976,6 +2262,9 @@ local function GetBestPetKeys()
 end
 
 
+local LastAllBestPetsMaxed = false
+
+
 local function FeedBestPetsOnce()
     if AutoFeedBestPetsBusy then
         return false, "Busy"
@@ -1999,7 +2288,6 @@ local function FeedBestPetsOnce()
         return false, "No pets found."
     end
 
-    -- Make sure at least one selected food exists before starting.
     local HasAvailableFood = false
 
     for _, FoodName in ipairs(SelectedFoods) do
@@ -2018,6 +2306,7 @@ local function FeedBestPetsOnce()
 
     local FeedCalls = 0
     local FoodsUsed = {}
+    local MaxedPetCount = 0
 
     for _, PetKey in ipairs(BestPetKeys) do
         if not HubRunning
@@ -2026,47 +2315,81 @@ local function FeedBestPetsOnce()
             break
         end
 
-        for _, FoodName in ipairs(SelectedFoods) do
-            if not HubRunning
-                or not Settings.AutoFeedBestPets
-            then
-                break
-            end
+        local GrowthState =
+            GetPetGrowthState(PetKey)
 
-            local FoodTool =
-                FindFoodTool(FoodName)
+        if GrowthState.IsMaxed then
+            MaxedPetCount += 1
 
-            if FoodTool then
-                -- Keep the selected food equipped to match the
-                -- game's normal feeding flow.
-                local EquippedTool =
-                    EquipFoodTool(FoodName)
+        else
+            for _, FoodName in ipairs(SelectedFoods) do
+                if not HubRunning
+                    or not Settings.AutoFeedBestPets
+                then
+                    break
+                end
 
-                if EquippedTool then
-                    local Success, ErrorMessage =
-                        pcall(function()
-                            FeedPetEvent:FireServer(
-                                PetKey,
-                                FoodName,
-                                true
+                -- Recheck before every food. A previous food may have
+                -- finished this pet's XP.
+                GrowthState =
+                    GetPetGrowthState(PetKey)
+
+                if GrowthState.IsMaxed then
+                    MaxedPetCount += 1
+                    break
+                end
+
+                local FoodTool =
+                    FindFoodTool(FoodName)
+
+                if FoodTool then
+                    local EquippedTool =
+                        EquipFoodTool(FoodName)
+
+                    if EquippedTool then
+                        local Success, ErrorMessage =
+                            pcall(function()
+                                FeedPetEvent:FireServer(
+                                    PetKey,
+                                    FoodName,
+                                    true
+                                )
+                            end)
+
+                        if Success then
+                            FeedCalls += 1
+                            FoodsUsed[FoodName] = true
+
+                            -- Give the replicated pet state a moment
+                            -- to update, then stop feeding this pet if
+                            -- that food maxed it.
+                            task.wait(0.15)
+
+                            GrowthState =
+                                GetPetGrowthState(PetKey)
+
+                            if GrowthState.IsMaxed then
+                                MaxedPetCount += 1
+
+                                Log(
+                                    "Pet "
+                                        .. tostring(PetKey)
+                                        .. " reached max XP • stopping feed"
+                                )
+
+                                break
+                            end
+                        else
+                            Log(
+                                "FeedPet failed for "
+                                    .. tostring(PetKey)
+                                    .. " with "
+                                    .. tostring(FoodName)
+                                    .. ": "
+                                    .. tostring(ErrorMessage)
                             )
-                        end)
-
-                    if Success then
-                        FeedCalls += 1
-                        FoodsUsed[FoodName] = true
-                    else
-                        Log(
-                            "FeedPet failed for "
-                                .. tostring(PetKey)
-                                .. " with "
-                                .. tostring(FoodName)
-                                .. ": "
-                                .. tostring(ErrorMessage)
-                        )
+                        end
                     end
-
-                    task.wait(0.12)
                 end
             end
         end
@@ -2082,20 +2405,47 @@ local function FeedBestPetsOnce()
         end
     end
 
+    local AllBestPetsMaxed =
+        #BestPetKeys > 0
+        and MaxedPetCount >= #BestPetKeys
+
+    if AllBestPetsMaxed then
+        if not LastAllBestPetsMaxed then
+            Log(
+                "Auto Feed: all current best pets are max XP • waiting for a new best pet"
+            )
+
+            Toast(
+                "Auto Feed Best Pets",
+                "All current best pets are max XP"
+            )
+        end
+
+        LastAllBestPetsMaxed = true
+    else
+        LastAllBestPetsMaxed = false
+    end
+
     Log(
         "Auto Feed Best Pets • "
             .. tostring(FeedCalls)
             .. " feed call(s) • "
+            .. tostring(MaxedPetCount)
+            .. "/"
+            .. tostring(#BestPetKeys)
+            .. " best pets maxed"
             .. (
                 #UsedList > 0
-                and table.concat(UsedList, ", ")
-                or "No selected food available"
+                and (
+                    " • "
+                    .. table.concat(UsedList, ", ")
+                )
+                or ""
             )
     )
 
     return true, FeedCalls
 end
-
 task.spawn(function()
     while HubRunning do
         if Settings.AutoFeedBestPets
@@ -2128,10 +2478,11 @@ end)
 
 
 --// ============================================================
---// AUTO SELL PETS
+--// AUTO SELL PETS ONE-BY-ONE
 --// ============================================================
 
-local AutoSellBusy = false
+local AutoSellPetBusy = false
+local LastAutoSellMessage = nil
 
 
 local function GetSellNPC()
@@ -2145,87 +2496,390 @@ local function GetSellNPC()
 end
 
 
-local function CountPetTools()
-    local Count = 0
+local function GetPetToolWeight(Tool)
+    if not Tool then
+        return 0
+    end
+
+    local Weight =
+        tonumber(Tool:GetAttribute("Weight"))
+        or tonumber(Tool:GetAttribute("BaseWeight"))
+
+    if Weight then
+        return Weight
+    end
+
+    local FromName =
+        tostring(Tool.Name):match(
+            "%[([%d%.]+)%s*[Kk][Gg]%]"
+        )
+
+    return tonumber(FromName) or 0
+end
+
+
+local function FindPetToolByKey(PetKey)
+    for _, Container in ipairs({
+        LocalPlayer.Character,
+        Backpack,
+    }) do
+        if Container then
+            for _, Child in ipairs(Container:GetChildren()) do
+                if Child:IsA("Tool")
+                    and Child:HasTag("Pet")
+                    and Child:GetAttribute("PetKey") == PetKey
+                then
+                    return Child
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function GetDesiredBestPetKeys()
+    local Result = {}
+
+    if not Settings.AutoPlaceBestPets
+        or not CollectOwnedPets
+    then
+        return Result
+    end
+
+    local Success, Owned =
+        pcall(CollectOwnedPets)
+
+    if not Success or typeof(Owned) ~= "table" then
+        return Result
+    end
+
+    local MaxPets =
+        tonumber(
+            LocalPlayer:GetAttribute("MaxPets")
+        ) or 5
+
+    for Index = 1,
+        math.min(
+            MaxPets,
+            #Owned
+        )
+    do
+        local Pet = Owned[Index]
+
+        if Pet and Pet.Key then
+            Result[Pet.Key] = true
+        end
+    end
+
+    return Result
+end
+
+
+local function GetUnderWeightPetTools()
+    local Threshold =
+        math.max(
+            tonumber(
+                Settings.SellWeightThreshold
+            ) or 10,
+            0
+        )
+
+    local ProtectedBestKeys =
+        GetDesiredBestPetKeys()
+
+    local SeenKeys = {}
+    local Result = {}
 
     for _, Container in ipairs({
         LocalPlayer.Character,
         Backpack,
     }) do
         if Container then
-            for _, Child in ipairs(
-                Container:GetChildren()
-            ) do
+            for _, Child in ipairs(Container:GetChildren()) do
                 if Child:IsA("Tool")
                     and Child:HasTag("Pet")
-                    and Child:GetAttribute("PetKey")
                 then
-                    Count += 1
+                    local PetKey =
+                        Child:GetAttribute("PetKey")
+
+                    if PetKey
+                        and not SeenKeys[PetKey]
+                        and not ProtectedBestKeys[PetKey]
+                    then
+                        SeenKeys[PetKey] = true
+
+                        local Weight =
+                            GetPetToolWeight(Child)
+
+                        if Weight < Threshold then
+                            table.insert(
+                                Result,
+                                {
+                                    Tool = Child,
+                                    Key = PetKey,
+                                    Weight = Weight,
+                                }
+                            )
+                        end
+                    end
                 end
             end
         end
     end
 
-    return Count
+    table.sort(
+        Result,
+        function(A, B)
+            if A.Weight ~= B.Weight then
+                return A.Weight < B.Weight
+            end
+
+            return tostring(A.Key) < tostring(B.Key)
+        end
+    )
+
+    return Result
 end
 
 
-local function SellPetsOnce()
-    if AutoSellBusy then
+local function EquipPetForSale(Pet)
+    local Character =
+        GetCharacter()
+
+    local Humanoid =
+        Character
+        and Character:FindFirstChildOfClass(
+            "Humanoid"
+        )
+
+    if not Character
+        or not Humanoid
+        or Humanoid.Health <= 0
+        or not Pet
+        or not Pet.Tool
+        or not Pet.Tool.Parent
+    then
+        return nil
+    end
+
+    if LocalPlayer:GetAttribute("IsRiding") == true
+        or LocalPlayer:GetAttribute("IsPassenger") == true
+    then
+        return nil
+    end
+
+    pcall(function()
+        Humanoid:UnequipTools()
+    end)
+
+    task.wait(0.08)
+
+    pcall(function()
+        Humanoid:EquipTool(Pet.Tool)
+    end)
+
+    local Timeout =
+        os.clock() + 1.5
+
+    while HubRunning
+        and Pet.Tool.Parent ~= Character
+        and os.clock() < Timeout
+    do
+        task.wait()
+    end
+
+    if Pet.Tool.Parent == Character then
+        return Pet.Tool
+    end
+
+    return nil
+end
+
+
+local function SellOneUnderWeightPet()
+    if AutoSellPetBusy then
         return false, "Busy"
     end
 
-    if not Settings.AutoSellPets then
+    if not Settings.AutoSellUnderWeight then
         return false, "Disabled"
     end
 
-    -- This function is no longer called on a timer.
-    -- It runs only after the Best Pets routine has finished
-    -- equipping/placing the current best pets.
-    local PetCount =
-        CountPetTools()
+    if BestPetsBusy
+        or AutoFeedBestPetsBusy
+    then
+        return false, "Waiting for pet automation"
+    end
 
-    if PetCount <= 0 then
-        return false, "No pet tools to sell."
+    local Candidates =
+        GetUnderWeightPetTools()
+
+    local Pet =
+        Candidates[1]
+
+    if not Pet then
+        return false, "No pets under weight"
     end
 
     local Richie =
         GetSellNPC()
 
     if not Richie then
-        return false, "Richie sell NPC not found."
+        return false, "Richie not found"
     end
 
-    AutoSellBusy = true
+    -- Recheck immediately before equipping so a changed threshold
+    -- cannot sell a pet that is no longer eligible.
+    local CurrentWeight =
+        GetPetToolWeight(Pet.Tool)
 
-    local Success, ErrorMessage =
+    if CurrentWeight >= Settings.SellWeightThreshold then
+        return false, "Pet no longer under threshold"
+    end
+
+    AutoSellPetBusy = true
+
+    local Equipped =
+        EquipPetForSale(Pet)
+
+    if not Equipped then
+        AutoSellPetBusy = false
+        return false, "Could not equip pet"
+    end
+
+    -- The normal dialogue option sells the currently equipped pet.
+    local FireSuccess, FireError =
         pcall(function()
             DialogueSelectEvent:FireServer(
                 Richie,
-                "I would like to sell my pets"
+                "I would like to sell this"
             )
         end)
 
-    if Success then
-        Log(
-            "Auto Sell Pets requested • "
-                .. tostring(PetCount)
-                .. " pet tool(s) detected"
-        )
-    else
-        Log(
-            "Auto Sell Pets error: "
-                .. tostring(ErrorMessage)
-        )
+    if not FireSuccess then
+        AutoSellPetBusy = false
+
+        return false,
+            "DialogueSelect failed: "
+                .. tostring(FireError)
     end
 
-    task.wait(0.35)
+    Log(
+        "Auto Sell requested • "
+            .. tostring(Pet.Tool.Name)
+            .. " • "
+            .. string.format(
+                "%.2f KG",
+                CurrentWeight
+            )
+    )
 
-    AutoSellBusy = false
+    -- Confirm this specific pet Tool disappears before moving on.
+    local Sold = false
+    local Timeout =
+        os.clock() + 2.5
 
-    return Success,
-        Success and PetCount or tostring(ErrorMessage)
+    while HubRunning
+        and Settings.AutoSellUnderWeight
+        and os.clock() < Timeout
+    do
+        if not FindPetToolByKey(Pet.Key) then
+            Sold = true
+            break
+        end
+
+        task.wait(0.08)
+    end
+
+    if Sold then
+        Log(
+            "Auto Sold pet • "
+                .. tostring(Pet.Key)
+                .. " • "
+                .. string.format(
+                    "%.2f KG",
+                    CurrentWeight
+                )
+        )
+
+        LastAutoSellMessage = nil
+    else
+        Log(
+            "Auto Sell did not confirm removal • "
+                .. tostring(Pet.Key)
+        )
+
+        local Character =
+            LocalPlayer.Character
+
+        local Humanoid =
+            Character
+            and Character:FindFirstChildOfClass(
+                "Humanoid"
+            )
+
+        if Humanoid
+            and LocalPlayer:GetAttribute("IsRiding") ~= true
+        then
+            pcall(function()
+                Humanoid:UnequipTools()
+            end)
+        end
+    end
+
+    AutoSellPetBusy = false
+
+    return Sold,
+        Sold
+            and Pet
+            or "Sale was not confirmed"
 end
+
+
+task.spawn(function()
+    while HubRunning do
+        if Settings.AutoSellUnderWeight
+            and not AutoSellPetBusy
+            and not BestPetsBusy
+            and not AutoFeedBestPetsBusy
+        then
+            local Success, Result =
+                pcall(
+                    SellOneUnderWeightPet
+                )
+
+            if not Success then
+                AutoSellPetBusy = false
+
+                Log(
+                    "Auto Sell Under Weight error: "
+                        .. tostring(Result)
+                )
+
+            elseif Result ~= nil
+                and Result ~= "Busy"
+                and Result ~= "Disabled"
+                and Result ~= "Waiting for pet automation"
+                and Result ~= "No pets under weight"
+                and tostring(Result) ~= LastAutoSellMessage
+            then
+                LastAutoSellMessage =
+                    tostring(Result)
+            end
+        end
+
+        task.wait(
+            math.max(
+                tonumber(
+                    Settings.AutoSellPetDelay
+                ) or 0.75,
+                0.25
+            )
+        )
+    end
+end)
 
 
 --// ============================================================
@@ -2592,44 +3246,6 @@ local function PlaceBestPetsOnce(
         end)
     end
 
-    -- Only sell AFTER the best-pet placement routine finishes.
-    -- This leaves the newly selected best pets placed and sells
-    -- whatever pet tools are still left in the inventory.
-    local SoldExtras = false
-    local SellMessage = nil
-
-    if Settings.AutoSellPets then
-        task.wait(0.25)
-
-        local RemainingPetTools =
-            CountPetTools()
-
-        if RemainingPetTools > 0 then
-            local SellSuccess, SellResult =
-                SellPetsOnce()
-
-            SoldExtras = SellSuccess
-            SellMessage = SellResult
-
-            if SellSuccess then
-                Log(
-                    "Auto Sell ran after Best Pets • "
-                        .. tostring(SellResult)
-                        .. " leftover pet tool(s)"
-                )
-            else
-                Log(
-                    "Auto Sell after Best Pets skipped/failed: "
-                        .. tostring(SellResult)
-                )
-            end
-        else
-            Log(
-                "Auto Sell after Best Pets: no leftover pet tools"
-            )
-        end
-    end
-
     BestPetsBusy = false
 
     if ShowNotification then
@@ -2810,8 +3426,10 @@ DashboardTab:CreateButton({
                 .. "\nAuto Hatch: " .. tostring(Settings.AutoHatch)
                 .. "\nAuto Luck Upgrade: " .. tostring(Settings.AutoHatchLuckUpgrade)
                 .. "\nBest Pets: " .. tostring(Settings.AutoPlaceBestPets)
-                .. "\nSell After Best Pets: " .. tostring(Settings.AutoSellPets)
+
                 .. "\nAuto Feed Best Pets: " .. tostring(Settings.AutoFeedBestPets)
+                .. "\nAuto Sell Under Weight: " .. tostring(Settings.AutoSellUnderWeight)
+                .. "\nSell Below: " .. tostring(Settings.SellWeightThreshold) .. " KG"
                 .. "\nAnti AFK: " .. tostring(Settings.AntiAFK)
                 .. "\nPlot: " .. tostring(Plot and Plot.Name or "Not Found"),
             6
@@ -2876,20 +3494,59 @@ EggToggleRow:CreateToggle({
     end
 })
 
-local BackpackEggOptions =
-    GetBackpackEggNames()
+local function GetPlaceEggDropdownOptions()
+    local Options =
+        GetBackpackEggNames()
 
-if #BackpackEggOptions == 0 then
-    BackpackEggOptions = {
-        "No Eggs Found"
-    }
+    local Seen = {}
+
+    for _, Name in ipairs(Options) do
+        Seen[Name] = true
+    end
+
+    -- Always keep the two preferred eggs visible in the dropdown.
+    for _, Name in ipairs({
+        "Cherub Egg",
+        "Blackhole Egg",
+    }) do
+        if not Seen[Name] then
+            table.insert(Options, Name)
+            Seen[Name] = true
+        end
+    end
+
+    table.sort(
+        Options,
+        function(A, B)
+            local APriority =
+                PreferredEggPriority[A] or 999
+
+            local BPriority =
+                PreferredEggPriority[B] or 999
+
+            if APriority ~= BPriority then
+                return APriority < BPriority
+            end
+
+            return A < B
+        end
+    )
+
+    return Options
 end
+
+
+local BackpackEggOptions =
+    GetPlaceEggDropdownOptions()
 
 local PlaceEggDropdown =
     EggsTab:CreateDropdown({
-        name = "Place Egg Types",
+        name = "Place Egg Types • Cherub > Blackhole",
         options = BackpackEggOptions,
-        value = {},
+        value = {
+            "Cherub Egg",
+            "Blackhole Egg",
+        },
         multiSelect = true,
         flag = "SelectedPlaceEggs",
 
@@ -2904,6 +3561,7 @@ local PlaceEggDropdown =
                 GetSelectedNameText(
                     Settings.SelectedPlaceEggs
                 )
+                    .. " • priority uses weight"
             )
 
             Log(
@@ -2918,13 +3576,7 @@ local PlaceEggDropdown =
 
 local function RefreshPlaceEggDropdown()
     local Options =
-        GetBackpackEggNames()
-
-    if #Options == 0 then
-        Options = {
-            "No Eggs Found"
-        }
-    end
+        GetPlaceEggDropdownOptions()
 
     pcall(function()
         PlaceEggDropdown:Refresh(Options)
@@ -3187,27 +3839,6 @@ PetAutomationRow:CreateSlider({
     end
 })
 
-PetAutomationRow:CreateToggle({
-    name = "Auto Sell Pets",
-    value = false,
-    flag = "AutoSellPets",
-
-    callback = function(Value)
-        Settings.AutoSellPets = Value
-
-        Log(
-            "Auto Sell Pets: "
-                .. tostring(Value)
-        )
-
-        Toast(
-            "Auto Sell Pets",
-            Value
-                and "Will sell leftovers after Best Pets finishes"
-                or "Disabled"
-        )
-    end
-})
 
 local PetFeedRow = PetsTab:CreateGroup()
 
@@ -3248,6 +3879,63 @@ PetFeedRow:CreateSlider({
         Settings.AutoFeedBestPetsDelay = Value
     end
 })
+
+
+local PetSellRow = PetsTab:CreateGroup()
+
+PetSellRow:CreateToggle({
+    name = "Auto Sell Under Weight",
+    value = false,
+    flag = "AutoSellUnderWeight",
+
+    callback = function(Value)
+        Settings.AutoSellUnderWeight =
+            Value
+
+        LastAutoSellMessage = nil
+
+        Log(
+            "Auto Sell Under Weight: "
+                .. tostring(Value)
+        )
+
+        Toast(
+            "Auto Sell Under Weight",
+            Value
+                and (
+                    "Selling one-by-one below "
+                    .. tostring(
+                        Settings.SellWeightThreshold
+                    )
+                    .. " KG"
+                )
+                or "Disabled"
+        )
+    end
+})
+
+PetSellRow:CreateSlider({
+    name = "Sell Below Weight",
+    range = { 0.5, 100 },
+    increment = 0.5,
+    value = 10,
+    suffix = " KG",
+    flag = "SellWeightThreshold",
+
+    callback = function(Value)
+        Settings.SellWeightThreshold =
+            Value
+
+        LastAutoSellMessage = nil
+
+        Log(
+            "Sell below weight: "
+                .. tostring(Value)
+                .. " KG"
+        )
+    end
+})
+
 
 
 
@@ -3531,8 +4219,8 @@ local function UnloadHub()
     Settings.AutoHatch = false
     Settings.AutoHatchLuckUpgrade = false
     Settings.AutoPlaceBestPets = false
-    Settings.AutoSellPets = false
     Settings.AutoFeedBestPets = false
+    Settings.AutoSellUnderWeight = false
     Settings.AntiAFK = false
 
     if AntiAFKConnection then
