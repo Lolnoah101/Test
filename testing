@@ -175,6 +175,7 @@ local Settings = {
     AutoPickup = false,
 
     -- Backpack egg placement is independent from Auto Pickup.
+    -- New game version allows up to 10 eggs anywhere inside your plot.
     AutoPlaceEgg = false,
     AutoPlaceDelay = 0.20,
     SelectedPlaceEggs = {
@@ -246,6 +247,7 @@ local LuckOptions = {
     "300M Luck",
     "1.5B Luck",
     "100B Luck",
+    "300B Luck",
     "1T Luck",
 }
 
@@ -933,50 +935,230 @@ local function GetMatchingEggs(WantedLuck)
 end
 
 --// ============================================================
---// NEST / AUTO PLACE
+--// PLOT EGG PLACEMENT / AUTO PLACE
 --// ============================================================
 
-local function GetOwnNests()
-    local Plot = GetPlayerPlot()
+local MAX_PLOT_EGGS = 10
 
+
+local function GetPlotEggFolder(Plot)
     if not Plot then
         return nil
     end
 
-    return Plot:FindFirstChild("Nests")
+    return Plot:FindFirstChild("Eggs")
 end
 
 
-local function GetFreeNest()
-    local Nests = GetOwnNests()
+local function GetPlacedEggCountForPlot(Plot)
+    local Folder = GetPlotEggFolder(Plot)
 
-    if not Nests then
+    if not Folder then
+        return 0
+    end
+
+    local Count = 0
+
+    for _, Egg in ipairs(Folder:GetChildren()) do
+        -- Placed eggs normally carry EggKey. Keep a fallback for
+        -- replicated egg models that arrive before their attribute.
+        if Egg:GetAttribute("EggKey") ~= nil
+            or Egg:IsA("Model")
+            or Egg:IsA("BasePart")
+        then
+            Count += 1
+        end
+    end
+
+    return Count
+end
+
+
+local function GetWorldPosition(Object)
+    if not Object then
         return nil
     end
 
-    local Candidates = {}
+    if Object:IsA("BasePart") then
+        return Object.Position
+    end
 
-    for _, Nest in ipairs(Nests:GetChildren()) do
-        local Unlocked = Nest:GetAttribute("Unlocked")
-        local Occupied = Nest:GetAttribute("Occupied")
+    if Object:IsA("Model") then
+        local Success, Pivot =
+            pcall(function()
+                return Object:GetPivot()
+            end)
 
-        if Unlocked == true and Occupied ~= true then
-            table.insert(Candidates, Nest)
+        if Success then
+            return Pivot.Position
         end
     end
 
-    table.sort(Candidates, function(A, B)
-        local AN = tonumber(A.Name)
-        local BN = tonumber(B.Name)
+    local Part =
+        Object:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
 
-        if AN and BN then
-            return AN < BN
+    return Part and Part.Position or nil
+end
+
+
+local function GetPlotPlacementBase(Plot)
+    if not Plot then
+        return nil
+    end
+
+    local Baseplate =
+        Plot:FindFirstChild("Baseplate")
+
+    if Baseplate
+        and Baseplate:IsA("BasePart")
+    then
+        return Baseplate
+    end
+
+    local Target =
+        GetPlotTarget(Plot)
+
+    if Target
+        and Target:IsA("BasePart")
+    then
+        return Target
+    end
+
+    return nil
+end
+
+
+local function BuildPlotPlacementSlots(Plot)
+    local Base =
+        GetPlotPlacementBase(Plot)
+
+    if not Base then
+        return {}
+    end
+
+    local Slots = {}
+
+    -- Use a 4x4 candidate grid but still enforce the game's 10-egg cap.
+    -- More candidate positions helps avoid overlapping eggs the player
+    -- may have placed manually.
+    local Columns = 4
+    local Rows = 4
+
+    local HalfX =
+        math.max(
+            Base.Size.X * 0.34,
+            2
+        )
+
+    local HalfZ =
+        math.max(
+            Base.Size.Z * 0.34,
+            2
+        )
+
+    local SurfaceY =
+        Base.Size.Y / 2
+        + 0.05
+
+    for Row = 1, Rows do
+        for Column = 1, Columns do
+            local XAlpha =
+                Columns == 1
+                and 0
+                or (
+                    (Column - 1)
+                    / (Columns - 1)
+                    * 2
+                    - 1
+                )
+
+            local ZAlpha =
+                Rows == 1
+                and 0
+                or (
+                    (Row - 1)
+                    / (Rows - 1)
+                    * 2
+                    - 1
+                )
+
+            local LocalPosition =
+                Vector3.new(
+                    XAlpha * HalfX,
+                    SurfaceY,
+                    ZAlpha * HalfZ
+                )
+
+            table.insert(
+                Slots,
+                Base.CFrame:PointToWorldSpace(
+                    LocalPosition
+                )
+            )
+        end
+    end
+
+    return Slots
+end
+
+
+local function GetNextPlotPlacementPosition(Plot)
+    local Slots =
+        BuildPlotPlacementSlots(Plot)
+
+    if #Slots == 0 then
+        return nil
+    end
+
+    local ExistingPositions = {}
+    local Folder =
+        GetPlotEggFolder(Plot)
+
+    if Folder then
+        for _, Egg in ipairs(
+            Folder:GetChildren()
+        ) do
+            local Position =
+                GetWorldPosition(Egg)
+
+            if Position then
+                table.insert(
+                    ExistingPositions,
+                    Position
+                )
+            end
+        end
+    end
+
+    -- Pick the first grid point that is not already occupied.
+    -- X/Z distance is what matters for eggs sitting on the plot floor.
+    for _, Slot in ipairs(Slots) do
+        local Occupied = false
+
+        for _, Existing in ipairs(
+            ExistingPositions
+        ) do
+            local HorizontalDistance =
+                Vector2.new(
+                    Slot.X - Existing.X,
+                    Slot.Z - Existing.Z
+                ).Magnitude
+
+            if HorizontalDistance < 3.5 then
+                Occupied = true
+                break
+            end
         end
 
-        return A.Name < B.Name
-    end)
+        if not Occupied then
+            return Slot
+        end
+    end
 
-    return Candidates[1]
+    return nil
 end
 
 
@@ -1177,14 +1359,34 @@ local function AutoPlaceOneEgg(Force)
         return false, "Auto Place Egg is disabled."
     end
 
-    local Nest = GetFreeNest()
+    local Plot =
+        GetPlayerPlot()
 
-    if not Nest then
-        return false, "No unlocked empty nest was found."
+    if not Plot then
+        return false, "Your plot could not be found."
+    end
+
+    -- The updated game uses free placement instead of nests.
+    if LocalPlayer:GetAttribute("NoNest") ~= true then
+        return false, "Free plot egg placement is not active yet."
+    end
+
+    local BeforeCount =
+        GetPlacedEggCountForPlot(Plot)
+
+    if BeforeCount >= MAX_PLOT_EGGS then
+        return false, "Plot already has 10 eggs."
     end
 
     if next(Settings.SelectedPlaceEggs) == nil then
         return false, "No backpack egg types are selected."
+    end
+
+    local PlantPosition =
+        GetNextPlotPlacementPosition(Plot)
+
+    if not PlantPosition then
+        return false, "No clear placement spot was found inside your plot."
     end
 
     local Tool =
@@ -1201,38 +1403,47 @@ local function AutoPlaceOneEgg(Force)
     Log(
         "Placing "
             .. tostring(ToolName)
-            .. " into nest "
-            .. tostring(Nest.Name)
+            .. " on plot • "
+            .. tostring(BeforeCount + 1)
+            .. "/"
+            .. tostring(MAX_PLOT_EGGS)
     )
 
-    local Success, ErrorMessage = pcall(function()
-        EggPlacedEvent:FireServer({
-            NestId = Nest.Name
-        })
-    end)
+    local Success, ErrorMessage =
+        pcall(function()
+            EggPlacedEvent:FireServer({
+                PlantPosition = PlantPosition
+            })
+        end)
 
     if not Success then
         return false, tostring(ErrorMessage)
     end
 
+    -- Wait for the plot's Eggs folder to confirm another egg appeared.
     local Started = os.clock()
 
     while os.clock() - Started < 2 do
-        if Nest:GetAttribute("Occupied") == true then
+        local CurrentCount =
+            GetPlacedEggCountForPlot(Plot)
+
+        if CurrentCount > BeforeCount then
             Log(
                 tostring(ToolName)
-                    .. " placed in nest "
-                    .. tostring(Nest.Name)
+                    .. " placed on plot • "
+                    .. tostring(CurrentCount)
+                    .. "/"
+                    .. tostring(MAX_PLOT_EGGS)
             )
 
-            return true, Nest.Name, ToolName
+            return true, PlantPosition, ToolName
         end
 
         task.wait(0.05)
     end
 
-    -- The remote was sent even if the client attribute has not refreshed yet.
-    return true, Nest.Name, ToolName
+    -- The request was sent; replication may simply be delayed.
+    return true, PlantPosition, ToolName
 end
 
 
@@ -1666,17 +1877,29 @@ end)
 task.spawn(function()
     while HubRunning do
         if Settings.AutoPlaceEgg then
-            local Nest = GetFreeNest()
+            local Plot =
+                GetPlayerPlot()
+
             local Tool =
                 FindSelectedEggTool(
                     Settings.SelectedPlaceEggs
                 )
 
-            if Nest and Tool then
+            local Count =
+                Plot
+                and GetPlacedEggCountForPlot(Plot)
+                or 0
+
+            if Plot
+                and Count < MAX_PLOT_EGGS
+                and Tool
+            then
                 local Success, Message =
                     AutoPlaceOneEgg(false)
 
-                if not Success then
+                if not Success
+                    and Message ~= "Plot already has 10 eggs."
+                then
                     Log(
                         "Auto Place waiting: "
                             .. tostring(Message)
@@ -3623,7 +3846,7 @@ EggToggleRow:CreateToggle({
         Toast(
             "Auto Place Egg",
             Value
-                and "Watching Backpack"
+                and "Watching Backpack • places up to 10 on your plot"
                 or "Disabled"
         )
     end
@@ -4180,6 +4403,7 @@ DiagnosticsTab:CreateButton({
                 },
                 {
                     title = "Independent Auto Place",
+                    description = "Updated for the no-nest system: selected eggs are placed at open positions inside your plot, up to 10 eggs.",
                 },
                 {
                     title = "Auto Hatch",
