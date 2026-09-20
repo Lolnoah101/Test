@@ -1,11 +1,18 @@
 --// ============================================================
---// SHADOW GARDEN - RAYFIELD GEN2 EGG HUB
---// Smooth Tween Movement + Auto Pickup + Plot Return
+--// HOLLOWMOONHUB • [🧬] RIDE A PET
+--// Polished Rayfield Gen2 automation hub
 --// ============================================================
-
---// NOTE:
---// This version uses the Rayfield Gen2 UI/features from your other script,
---// but does not enable anti-cheat evasion / concealment features.
+--//
+--// Core features
+--//   • Egg-luck auto pickup with smooth return-to-plot movement
+--//   • Preferred egg placement: Cherub Egg > Solaris Egg
+--//   • Auto hatch + hatch-luck upgrades
+--//   • Best-pet placement, feeding, and weight-based selling
+--//   • Anti-AFK, diagnostics, session stats, and clean unload
+--//
+--// This build focuses on organization, reliability, consistent branding,
+--// cleaner runtime cleanup, and keeping UI defaults synced with Settings.
+--// ============================================================
 
 --// ============================================================
 --// SERVICES
@@ -16,6 +23,33 @@ local Workspace = game:GetService("Workspace")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 local VirtualUser = game:GetService("VirtualUser")
+
+
+--// ============================================================
+--// APP CONFIG
+--// ============================================================
+
+local APP = {
+    HubName = "HollowMoonHub",
+    GameName = "Ride A Pet",
+    WindowName = "[🧬] Ride A Pet",
+    Subtitle = "By HollowMoonHub",
+    Version = "v1.0 Polished",
+
+    Theme = "cobalt",
+    SaveFile = "HollowMoonHub",
+    SaveFolder = "HollowMoonHub",
+
+    UnloadKey = "__HOLLOWMOON_RIDE_A_PET_UNLOAD",
+    LegacyUnloadKey = "__SHADOW_GARDEN_UNLOAD",
+}
+
+local PREFERRED_EGGS = {
+    "Cherub Egg",
+    "Solaris Egg",
+}
+
+local MAX_PLOT_EGGS = 10
 
 local PetAging =
     require(
@@ -53,6 +87,27 @@ local HatchLuck =
     )
 
 local LocalPlayer = Players.LocalPlayer
+
+local Environment =
+    type(getgenv) == "function"
+    and getgenv()
+    or _G
+
+-- Re-running the hub replaces the previous instance instead of stacking
+-- duplicate automation loops and event connections.
+for _, Key in ipairs({
+    APP.UnloadKey,
+    APP.LegacyUnloadKey,
+}) do
+    local PreviousUnload = Environment[Key]
+
+    if type(PreviousUnload) == "function" then
+        pcall(PreviousUnload)
+    end
+
+    Environment[Key] = nil
+end
+
 
 local PetRenderer =
     require(
@@ -104,60 +159,84 @@ local DialogueSelectEvent =
 --// RAYFIELD
 --// ============================================================
 
+local function IsRayfieldLibrary(Value)
+    return type(Value) == "table"
+        and type(Value.CreateWindow) == "function"
+end
+
 local function LoadRayfield()
-    local URL = "https://sirius.menu/gen2"
+    local Cached =
+        Environment.__HOLLOWMOON_RAYFIELD_GEN2
+
+    if IsRayfieldLibrary(Cached) then
+        return Cached
+    end
+
+    local URLs = {
+        "https://sirius.menu/gen2",
+        "https://sirius.menu/gen2-preview",
+    }
+
     local LastError = "Unknown error"
 
-    for Attempt = 1, 3 do
-        local HttpSuccess, SourceOrError =
-            pcall(function()
-                return game:HttpGet(URL)
-            end)
-
-        if HttpSuccess and typeof(SourceOrError) == "string" then
-            local CompileSuccess, ChunkOrError =
+    for _, URL in ipairs(URLs) do
+        for Attempt = 1, 2 do
+            local HttpSuccess, SourceOrError =
                 pcall(function()
-                    return loadstring(SourceOrError)
+                    return game:HttpGet(URL)
                 end)
 
-            if CompileSuccess
-                and typeof(ChunkOrError) == "function"
+            if HttpSuccess
+                and type(SourceOrError) == "string"
+                and #SourceOrError > 0
             then
-                local RunSuccess, LibraryOrError =
-                    pcall(ChunkOrError)
+                local Chunk, CompileError =
+                    loadstring(SourceOrError)
 
-                if RunSuccess
-                    and LibraryOrError ~= nil
-                    and typeof(LibraryOrError.CreateWindow) == "function"
-                then
-                    return LibraryOrError
+                if Chunk then
+                    local RunSuccess, LibraryOrError =
+                        pcall(Chunk)
+
+                    if RunSuccess
+                        and IsRayfieldLibrary(LibraryOrError)
+                    then
+                        Environment.__HOLLOWMOON_RAYFIELD_GEN2 =
+                            LibraryOrError
+
+                        return LibraryOrError
+                    end
+
+                    LastError =
+                        RunSuccess
+                        and (
+                            "Rayfield loader returned "
+                            .. typeof(LibraryOrError)
+                            .. " instead of the library."
+                        )
+                        or tostring(LibraryOrError)
+                else
+                    LastError =
+                        "Rayfield compile failed: "
+                        .. tostring(CompileError)
                 end
-
-                LastError =
-                    RunSuccess
-                    and "Rayfield loader returned nil/invalid library."
-                    or tostring(LibraryOrError)
-
             else
                 LastError =
-                    CompileSuccess
-                    and "loadstring did not return a function."
-                    or tostring(ChunkOrError)
+                    HttpSuccess
+                    and "HttpGet returned an empty/non-string response."
+                    or tostring(SourceOrError)
             end
 
-        else
-            LastError =
-                HttpSuccess
-                and "HttpGet returned a non-string response."
-                or tostring(SourceOrError)
+            if Attempt < 2 then
+                task.wait(0.35)
+            end
         end
-
-        task.wait(0.75)
     end
 
     error(
-        "Failed to load Rayfield Gen2 after 3 attempts: "
-            .. tostring(LastError)
+        "["
+        .. APP.HubName
+        .. "] Failed to load Rayfield Gen2: "
+        .. tostring(LastError)
     )
 end
 
@@ -179,8 +258,8 @@ local Settings = {
     AutoPlaceEgg = false,
     AutoPlaceDelay = 0.20,
     SelectedPlaceEggs = {
-        ["Cherub Egg"] = true,
-        ["Blackhole Egg"] = true,
+        [PREFERRED_EGGS[1]] = true,
+        [PREFERRED_EGGS[2]] = true,
     },
 
     -- Auto hatch placed eggs once their Hatch prompt is enabled.
@@ -283,6 +362,96 @@ local MovementGeneration = 0
 local AntiAFKConnection = nil
 local AntiAFKTriggers = 0
 
+local Connections = {}
+local DebugConsole = nil
+
+local function TrackConnection(Connection)
+    if Connection then
+        table.insert(Connections, Connection)
+    end
+
+    return Connection
+end
+
+local function DisconnectConnections()
+    for _, Connection in ipairs(Connections) do
+        pcall(function()
+            Connection:Disconnect()
+        end)
+    end
+
+    table.clear(Connections)
+end
+
+local function Log(Message)
+    local Text =
+        "["
+        .. os.date("%H:%M:%S")
+        .. "] ["
+        .. APP.HubName
+        .. "] "
+        .. tostring(Message)
+
+    print(Text)
+
+    if DebugConsole then
+        pcall(function()
+            DebugConsole:Append(Text)
+        end)
+    end
+end
+
+local RuntimeErrorState = {}
+
+local function LogRuntimeError(Key, ErrorMessage)
+    local Now = os.clock()
+    local Message = tostring(ErrorMessage)
+    local Previous = RuntimeErrorState[Key]
+
+    if not Previous
+        or Previous.Message ~= Message
+        or Now - Previous.Time >= 2
+    then
+        RuntimeErrorState[Key] = {
+            Message = Message,
+            Time = Now,
+        }
+
+        Log(
+            tostring(Key)
+            .. " error: "
+            .. Message
+        )
+    end
+end
+
+local function ProtectedCall(Key, Callback, OnError)
+    local Results =
+        table.pack(
+            pcall(Callback)
+        )
+
+    if not Results[1] then
+        if OnError then
+            pcall(OnError)
+        end
+
+        LogRuntimeError(
+            Key,
+            Results[2]
+        )
+
+        return false
+    end
+
+    return true,
+        table.unpack(
+            Results,
+            2,
+            Results.n
+        )
+end
+
 local function SendAntiAFKInput()
     if not HubRunning or not Settings.AntiAFK then
         return
@@ -319,15 +488,17 @@ local function SendAntiAFKInput()
         )
     else
         warn(
-            "[Shadow Garden] Anti AFK failed: "
+            "[" .. APP.HubName .. "] Anti AFK failed: "
                 .. tostring(ErrorMessage)
         )
     end
 end
 
 AntiAFKConnection =
-    LocalPlayer.Idled:Connect(
-        SendAntiAFKInput
+    TrackConnection(
+        LocalPlayer.Idled:Connect(
+            SendAntiAFKInput
+        )
     )
 
 --// ============================================================
@@ -335,22 +506,22 @@ AntiAFKConnection =
 --// ============================================================
 
 local Window = Rayfield:CreateWindow({
-    name = "Shadow Garden",
-    subtitle = "Egg Automation",
+    name = APP.WindowName,
+    subtitle = APP.Subtitle,
     sidebarLayout = true,
 
-    profile = "Shadow Garden",
-    showName = "Shadow Garden",
+    profile = APP.GameName,
+    showName = APP.GameName,
     showIconOnly = true,
 
-    theme = "cobalt",
+    theme = APP.Theme,
     fallbackFont = Enum.Font.Gotham,
 
     configuration = {
         autoSave = true,
         autoLoad = true,
-        fileName = "ShadowGardenEggHub",
-        customFolder = "ShadowGardenEggHub",
+        fileName = APP.SaveFile,
+        customFolder = APP.SaveFolder,
     },
 
     translations = {
@@ -379,7 +550,7 @@ local Window = Rayfield:CreateWindow({
 --// ============================================================
 
 local Gen2Tag = Window:CreateTag({
-    text = "GEN2",
+    text = "GEN2 • " .. APP.Version,
     color = Color3.fromRGB(80, 130, 255),
     order = 1
 })
@@ -425,23 +596,13 @@ local function Notify(Title, Content, Duration)
     })
 end
 
-local DebugConsole = DiagnosticsTab:CreateConsole({
-    name = "Shadow Garden Console",
-    text = "Shadow Garden initialized.",
+DebugConsole = DiagnosticsTab:CreateConsole({
+    name = APP.HubName .. " Console",
+    text = APP.GameName .. " hub initialized.",
     height = 180,
     follow = true,
     maxLines = 200
 })
-
-local function Log(Message)
-    local Text = "[" .. os.date("%H:%M:%S") .. "] " .. tostring(Message)
-
-    print(Text)
-
-    pcall(function()
-        DebugConsole:Append(Text)
-    end)
-end
 
 --// ============================================================
 --// CHARACTER
@@ -938,9 +1099,6 @@ end
 --// PLOT EGG PLACEMENT / AUTO PLACE
 --// ============================================================
 
-local MAX_PLOT_EGGS = 10
-
-
 local function GetPlotEggFolder(Plot)
     if not Plot then
         return nil
@@ -1163,16 +1321,49 @@ end
 
 
 local function IsEggTool(Tool)
-    return Tool
-        and Tool:IsA("Tool")
-        and Tool:HasTag("Egg")
+    if not Tool
+        or not Tool:IsA("Tool")
+    then
+        return false
+    end
+
+    -- Preferred check from the older build.
+    local Tagged = false
+
+    pcall(function()
+        Tagged = Tool:HasTag("Egg")
+    end)
+
+    if Tagged then
+        return true
+    end
+
+    -- New fallback: the game can change/remove CollectionService tags
+    -- while still keeping egg Tools named "... Egg".
+    if tostring(Tool.Name):lower():match("egg$") then
+        return true
+    end
+
+    -- Attribute fallbacks used by several versions of the game.
+    for _, AttributeName in ipairs({
+        "EggKey",
+        "EggName",
+        "EggType",
+    }) do
+        if Tool:GetAttribute(AttributeName) ~= nil then
+            return true
+        end
+    end
+
+    return false
 end
 
 
-local PreferredEggPriority = {
-    ["Cherub Egg"] = 1,
-    ["Blackhole Egg"] = 2,
-}
+local PreferredEggPriority = {}
+
+for Index, EggName in ipairs(PREFERRED_EGGS) do
+    PreferredEggPriority[EggName] = Index
+end
 
 
 local function GetEggWeight(Tool)
@@ -1306,7 +1497,7 @@ local function FindSelectedEggTool(Selection)
             local BPriority =
                 PreferredEggPriority[B.Name] or 999
 
-            -- Cherub Egg always wins, then Blackhole Egg.
+            -- Cherub Egg always wins, then Solaris Egg.
             if APriority ~= BPriority then
                 return APriority < BPriority
             end
@@ -1339,14 +1530,29 @@ local function EquipSelectedEggTool(Selection)
     end
 
     if Tool.Parent ~= Character then
-        pcall(function()
-            Humanoid:EquipTool(Tool)
-        end)
+        local Equipped =
+            pcall(function()
+                Humanoid:EquipTool(Tool)
+            end)
 
-        task.wait(0.08)
+        if not Equipped then
+            return nil
+        end
+
+        local Timeout = os.clock() + 1.25
+
+        while HubRunning
+            and Tool.Parent ~= Character
+            and os.clock() < Timeout
+        do
+            task.wait(0.03)
+        end
     end
 
     if Tool.Parent == Character then
+        -- Give the equipped Tool one small scheduler step to finish any
+        -- client-side equip state before EggPlaced is fired.
+        task.wait(0.05)
         return Tool
     end
 
@@ -1355,7 +1561,9 @@ end
 
 
 local function AutoPlaceOneEgg(Force)
-    if not Force and not Settings.AutoPlaceEgg then
+    if not Force
+        and not Settings.AutoPlaceEgg
+    then
         return false, "Auto Place Egg is disabled."
     end
 
@@ -1366,24 +1574,26 @@ local function AutoPlaceOneEgg(Force)
         return false, "Your plot could not be found."
     end
 
-    -- The updated game uses free placement instead of nests.
-    if LocalPlayer:GetAttribute("NoNest") ~= true then
-        return false, "Free plot egg placement is not active yet."
-    end
-
     local BeforeCount =
-        GetPlacedEggCountForPlot(Plot)
+        GetPlacedEggCountForPlot(
+            Plot
+        )
 
     if BeforeCount >= MAX_PLOT_EGGS then
         return false, "Plot already has 10 eggs."
     end
 
-    if next(Settings.SelectedPlaceEggs) == nil then
+    if next(
+        Settings.SelectedPlaceEggs
+    ) == nil
+    then
         return false, "No backpack egg types are selected."
     end
 
     local PlantPosition =
-        GetNextPlotPlacementPosition(Plot)
+        GetNextPlotPlacementPosition(
+            Plot
+        )
 
     if not PlantPosition then
         return false, "No clear placement spot was found inside your plot."
@@ -1395,10 +1605,11 @@ local function AutoPlaceOneEgg(Force)
         )
 
     if not Tool then
-        return false, "No selected egg Tool is currently in your Backpack."
+        return false, "No selected egg Tool could be found/equipped."
     end
 
-    local ToolName = Tool.Name
+    local ToolName =
+        Tool.Name
 
     Log(
         "Placing "
@@ -1409,23 +1620,47 @@ local function AutoPlaceOneEgg(Force)
             .. tostring(MAX_PLOT_EGGS)
     )
 
+    -- Do not require LocalPlayer.NoNest == true here.
+    -- Some current servers do not expose that attribute even though
+    -- EggPlaced accepts free-placement positions.
+    local NoNestValue =
+        LocalPlayer:GetAttribute(
+            "NoNest"
+        )
+
+    if NoNestValue ~= true then
+        Log(
+            "Placement note: NoNest attribute = "
+                .. tostring(NoNestValue)
+                .. " • attempting normal EggPlaced request anyway"
+        )
+    end
+
     local Success, ErrorMessage =
         pcall(function()
             EggPlacedEvent:FireServer({
-                PlantPosition = PlantPosition
+                PlantPosition =
+                    PlantPosition
             })
         end)
 
     if not Success then
-        return false, tostring(ErrorMessage)
+        return false,
+            "EggPlaced remote error: "
+                .. tostring(ErrorMessage)
     end
 
-    -- Wait for the plot's Eggs folder to confirm another egg appeared.
-    local Started = os.clock()
+    -- Confirm the server actually accepted the placement.
+    local Started =
+        os.clock()
 
-    while os.clock() - Started < 2 do
+    while HubRunning
+        and os.clock() - Started < 3
+    do
         local CurrentCount =
-            GetPlacedEggCountForPlot(Plot)
+            GetPlacedEggCountForPlot(
+                Plot
+            )
 
         if CurrentCount > BeforeCount then
             Log(
@@ -1436,14 +1671,36 @@ local function AutoPlaceOneEgg(Force)
                     .. tostring(MAX_PLOT_EGGS)
             )
 
-            return true, PlantPosition, ToolName
+            return true,
+                PlantPosition,
+                ToolName
+        end
+
+        -- Some versions consume/remove the equipped egg before the placed
+        -- model replicates into Plot.Eggs. Treat that as accepted too.
+        if not Tool.Parent
+            or (
+                Tool.Parent ~= Backpack
+                and Tool.Parent
+                    ~= LocalPlayer.Character
+            )
+        then
+            Log(
+                tostring(ToolName)
+                    .. " placement accepted • waiting for plot replication"
+            )
+
+            return true,
+                PlantPosition,
+                ToolName
         end
 
         task.wait(0.05)
     end
 
-    -- The request was sent; replication may simply be delayed.
-    return true, PlantPosition, ToolName
+    return false,
+        "Server did not confirm the egg placement. "
+        .. "EggPlaced was sent, but the egg remained in your inventory."
 end
 
 
@@ -1854,11 +2111,21 @@ task.spawn(function()
         if Settings.AutoPickup
             and not IsPickingUp
         then
-            local Egg = FindEggBySelectedLucks()
+            ProtectedCall(
+                "Auto Pickup",
+                function()
+                    local Egg =
+                        FindEggBySelectedLucks()
 
-            if Egg then
-                PickupSelectedEgg(false)
-            end
+                    if Egg then
+                        PickupSelectedEgg(false)
+                    end
+                end,
+                function()
+                    IsPickingUp = false
+                    CancelActiveMovement()
+                end
+            )
         end
 
         task.wait(
@@ -1875,31 +2142,35 @@ end)
 --// ============================================================
 
 task.spawn(function()
+    local LastMessage = nil
+    local LastMessageTime = 0
+
     while HubRunning do
         if Settings.AutoPlaceEgg then
-            local Plot =
-                GetPlayerPlot()
-
-            local Tool =
-                FindSelectedEggTool(
-                    Settings.SelectedPlaceEggs
+            local CallOK,
+                Success,
+                Message =
+                ProtectedCall(
+                    "Auto Place Egg",
+                    function()
+                        return AutoPlaceOneEgg(false)
+                    end
                 )
 
-            local Count =
-                Plot
-                and GetPlacedEggCountForPlot(Plot)
-                or 0
-
-            if Plot
-                and Count < MAX_PLOT_EGGS
-                and Tool
+            if CallOK
+                and not Success
+                and Message
+                and Message ~= "Plot already has 10 eggs."
             then
-                local Success, Message =
-                    AutoPlaceOneEgg(false)
+                local Now = os.clock()
 
-                if not Success
-                    and Message ~= "Plot already has 10 eggs."
+                -- Avoid console spam while still showing the exact blocker.
+                if Message ~= LastMessage
+                    or Now - LastMessageTime >= 2
                 then
+                    LastMessage = Message
+                    LastMessageTime = Now
+
                     Log(
                         "Auto Place waiting: "
                             .. tostring(Message)
@@ -1925,20 +2196,25 @@ end)
 task.spawn(function()
     while HubRunning do
         if Settings.AutoHatch then
-            local Egg =
-                FindReadyHatchEgg()
+            ProtectedCall(
+                "Auto Hatch",
+                function()
+                    local Egg =
+                        FindReadyHatchEgg()
 
-            if Egg then
-                local Success, Message =
-                    HatchOneReadyEgg()
+                    if Egg then
+                        local Success, Message =
+                            HatchOneReadyEgg()
 
-                if not Success then
-                    Log(
-                        "Auto Hatch waiting: "
-                            .. tostring(Message)
-                    )
+                        if not Success then
+                            Log(
+                                "Auto Hatch waiting: "
+                                    .. tostring(Message)
+                            )
+                        end
+                    end
                 end
-            end
+            )
         end
 
         task.wait(
@@ -3544,6 +3820,38 @@ end)
 --// DASHBOARD
 --// ============================================================
 
+local function GetActiveAutomationNames()
+    local Active = {}
+
+    local Options = {
+        { Settings.AutoPickup, "Pickup" },
+        { Settings.AutoPlaceEgg, "Place Eggs" },
+        { Settings.AutoHatch, "Hatch" },
+        { Settings.AutoHatchLuckUpgrade, "Luck Upgrade" },
+        { Settings.AutoPlaceBestPets, "Best Pets" },
+        { Settings.AutoFeedBestPets, "Feed Pets" },
+        { Settings.AutoSellUnderWeight, "Sell Pets" },
+    }
+
+    for _, Entry in ipairs(Options) do
+        if Entry[1] then
+            table.insert(Active, Entry[2])
+        end
+    end
+
+    return Active
+end
+
+local function GetAutomationSummary()
+    local Active = GetActiveAutomationNames()
+
+    if #Active == 0 then
+        return "All automation is currently idle."
+    end
+
+    return "Active: " .. table.concat(Active, " • ")
+end
+
 local StatsRowA = DashboardTab:CreateGroup()
 
 local RenderedStat = StatsRowA:CreateStat({
@@ -3592,42 +3900,71 @@ local PlotStat = StatsRowB:CreateStat({
 })
 
 local SessionSummary = DashboardTab:CreateText({
-    name = "Status",
-    text = "Auto Pickup is currently disabled."
+    name = "Automation Status",
+    text = "All automation is currently idle."
 })
 
 task.spawn(function()
     while HubRunning do
-        local Matches = GetMatchingSelectedEggs()
-        local Plot = GetPlayerPlot()
+        ProtectedCall(
+            "Dashboard",
+            function()
+                local Matches =
+                    GetMatchingSelectedEggs()
 
-        RenderedStat:Set(#RenderedEggs:GetChildren())
-        MatchingStat:Set(#Matches)
-        PickupStat:Set(PickupCount)
+                local Plot =
+                    GetPlayerPlot()
 
-        SearchStat:Set(SearchCount)
-        RuntimeStat:Set(math.floor(os.clock() - SessionStarted))
-        PlotStat:Set(Plot and 1 or 0)
+                RenderedStat:Set(
+                    #RenderedEggs:GetChildren()
+                )
 
-        if Settings.AutoPickup then
-            SessionSummary:Set(
-                "Watching for: " .. GetSelectedLuckText()
-            )
+                MatchingStat:Set(#Matches)
+                PickupStat:Set(PickupCount)
+                SearchStat:Set(SearchCount)
 
-            pcall(function()
-                StatusTag:SetText("ACTIVE")
-                StatusTag:SetColor(Settings.HighlightColor)
-            end)
-        else
-            SessionSummary:Set(
-                "Auto Pickup is currently disabled."
-            )
+                RuntimeStat:Set(
+                    math.floor(
+                        os.clock()
+                        - SessionStarted
+                    )
+                )
 
-            pcall(function()
-                StatusTag:SetText("IDLE")
-                StatusTag:SetColor(Color3.fromRGB(115, 120, 135))
-            end)
-        end
+                PlotStat:Set(
+                    Plot and 1 or 0
+                )
+
+                local ActiveAutomations =
+                    GetActiveAutomationNames()
+
+                SessionSummary:Set(
+                    GetAutomationSummary()
+                )
+
+                pcall(function()
+                    if #ActiveAutomations > 0 then
+                        StatusTag:SetText(
+                            tostring(#ActiveAutomations)
+                            .. " ACTIVE"
+                        )
+
+                        StatusTag:SetColor(
+                            Settings.HighlightColor
+                        )
+                    else
+                        StatusTag:SetText("IDLE")
+
+                        StatusTag:SetColor(
+                            Color3.fromRGB(
+                                115,
+                                120,
+                                135
+                            )
+                        )
+                    end
+                end)
+            end
+        )
 
         task.wait(0.5)
     end
@@ -3641,7 +3978,9 @@ DashboardTab:CreateButton({
 
         Notify(
             "Session Status",
-            "Selected: " .. GetSelectedLuckText()
+            "Automation: " .. GetAutomationSummary()
+                .. "\nSelected Luck: " .. GetSelectedLuckText()
+                .. "\nPreferred Place Eggs: " .. table.concat(PREFERRED_EGGS, " > ")
                 .. "\nRendered Eggs: " .. tostring(#RenderedEggs:GetChildren())
                 .. "\nMatching Eggs: " .. tostring(#Matches)
                 .. "\nPickups: " .. tostring(PickupCount)
@@ -3664,10 +4003,19 @@ DashboardTab:CreateButton({
 --// EGGS TAB
 --// ============================================================
 
+EggsTab:CreateText({
+    name = "Egg Automation",
+    text = "Pickup selected luck eggs, place preferred backpack eggs, hatch ready eggs, and manage hatch-luck upgrades."
+})
+
+EggsTab:CreateDivider({
+    text = "Pickup"
+})
+
 EggsTab:CreateDropdown({
     name = "Egg Luck",
     options = LuckOptions,
-    value = { "5 Luck" },
+    value = GetSelectedLuckList(),
     multiSelect = true,
     flag = "SelectedEggLuck",
 
@@ -3687,7 +4035,7 @@ local EggToggleRow = EggsTab:CreateGroup()
 
 EggToggleRow:CreateToggle({
     name = "Auto Pickup",
-    value = false,
+    value = Settings.AutoPickup,
     flag = "AutoPickup",
 
     callback = function(Value)
@@ -3717,6 +4065,10 @@ EggToggleRow:CreateToggle({
     end
 })
 
+EggsTab:CreateDivider({
+    text = "Placement"
+})
+
 local function GetPlaceEggDropdownOptions()
     local Options =
         GetBackpackEggNames()
@@ -3728,10 +4080,7 @@ local function GetPlaceEggDropdownOptions()
     end
 
     -- Always keep the two preferred eggs visible in the dropdown.
-    for _, Name in ipairs({
-        "Cherub Egg",
-        "Blackhole Egg",
-    }) do
+    for _, Name in ipairs(PREFERRED_EGGS) do
         if not Seen[Name] then
             table.insert(Options, Name)
             Seen[Name] = true
@@ -3764,12 +4113,9 @@ local BackpackEggOptions =
 
 local PlaceEggDropdown =
     EggsTab:CreateDropdown({
-        name = "Place Egg Types • Cherub > Blackhole",
+        name = "Place Egg Types • " .. table.concat(PREFERRED_EGGS, " > "),
         options = BackpackEggOptions,
-        value = {
-            "Cherub Egg",
-            "Blackhole Egg",
-        },
+        value = PREFERRED_EGGS,
         multiSelect = true,
         flag = "SelectedPlaceEggs",
 
@@ -3807,13 +4153,17 @@ local function RefreshPlaceEggDropdown()
 end
 
 
-Backpack.ChildAdded:Connect(function()
-    task.defer(RefreshPlaceEggDropdown)
-end)
+TrackConnection(
+    Backpack.ChildAdded:Connect(function()
+        task.defer(RefreshPlaceEggDropdown)
+    end)
+)
 
-Backpack.ChildRemoved:Connect(function()
-    task.defer(RefreshPlaceEggDropdown)
-end)
+TrackConnection(
+    Backpack.ChildRemoved:Connect(function()
+        task.defer(RefreshPlaceEggDropdown)
+    end)
+)
 
 
 EggsTab:CreateButton({
@@ -3832,7 +4182,7 @@ EggsTab:CreateButton({
 
 EggToggleRow:CreateToggle({
     name = "Auto Place Egg",
-    value = false,
+    value = Settings.AutoPlaceEgg,
     flag = "AutoPlaceEgg",
 
     callback = function(Value)
@@ -3846,7 +4196,7 @@ EggToggleRow:CreateToggle({
         Toast(
             "Auto Place Egg",
             Value
-                and "Watching Backpack • places up to 10 on your plot"
+                and "Watching Backpack • equips selected eggs and places up to 10 on your plot"
                 or "Disabled"
         )
     end
@@ -3859,7 +4209,7 @@ EggAutomationDelayRow:CreateSlider({
     name = "Auto Place Delay",
     range = { 0.05, 1.5 },
     increment = 0.05,
-    value = 0.20,
+    value = Settings.AutoPlaceDelay,
     suffix = "s",
     flag = "AutoPlaceDelay",
 
@@ -3870,13 +4220,13 @@ EggAutomationDelayRow:CreateSlider({
 
 
 EggsTab:CreateDivider({
-    text = "Auto Hatch"
+    text = "Hatching"
 })
 
 
 EggToggleRow:CreateToggle({
     name = "Auto Hatch",
-    value = false,
+    value = Settings.AutoHatch,
     flag = "AutoHatch",
 
     callback = function(Value)
@@ -3901,7 +4251,7 @@ EggAutomationDelayRow:CreateSlider({
     name = "Auto Hatch Delay",
     range = { 0.05, 1.5 },
     increment = 0.05,
-    value = 0.20,
+    value = Settings.AutoHatchDelay,
     suffix = "s",
     flag = "AutoHatchDelay",
 
@@ -3915,7 +4265,7 @@ local HatchLuckUpgradeRow = EggsTab:CreateGroup()
 
 HatchLuckUpgradeRow:CreateToggle({
     name = "Auto Hatch Luck Upgrade",
-    value = false,
+    value = Settings.AutoHatchLuckUpgrade,
     flag = "AutoHatchLuckUpgrade",
 
     callback = function(Value)
@@ -3949,7 +4299,7 @@ HatchLuckUpgradeRow:CreateSlider({
     name = "Luck Upgrade Delay",
     range = { 0.10, 2.00 },
     increment = 0.05,
-    value = 0.35,
+    value = Settings.HatchLuckUpgradeDelay,
     suffix = "s",
     flag = "HatchLuckUpgradeDelay",
 
@@ -3965,7 +4315,7 @@ EggMovementRow:CreateSlider({
     name = "Search Delay",
     range = { 0.05, 2 },
     increment = 0.05,
-    value = 0.25,
+    value = Settings.SearchDelay,
     suffix = "s",
     flag = "SearchDelay",
 
@@ -3978,7 +4328,7 @@ EggMovementRow:CreateSlider({
     name = "Tween Speed",
     range = { 25, 500 },
     increment = 5,
-    value = 120,
+    value = Settings.TweenSpeed,
     suffix = " studs/s",
     flag = "TweenSpeed",
 
@@ -3989,20 +4339,19 @@ EggMovementRow:CreateSlider({
 })
 
 
-
-
-
-
-
-
 --// ============================================================
 --// PETS TAB
 --// ============================================================
 
+PetsTab:CreateText({
+    name = "Pet Automation",
+    text = "Keep your strongest income pets placed, feed selected foods, and sell pets below your chosen weight."
+})
+
 PetsTab:CreateDropdown({
     name = "Pet Food",
     options = PetFoodOptions,
-    value = { "Grass" },
+    value = GetSelectedPetFoodList(),
     multiSelect = true,
     flag = "SelectedPetFoods",
 
@@ -4027,7 +4376,7 @@ local PetAutomationRow = PetsTab:CreateGroup()
 
 PetAutomationRow:CreateToggle({
     name = "Auto Place Best Pets",
-    value = false,
+    value = Settings.AutoPlaceBestPets,
     flag = "AutoPlaceBestPets",
 
     callback = function(Value)
@@ -4052,7 +4401,7 @@ PetAutomationRow:CreateSlider({
     name = "Best Pets Check Delay",
     range = { 0.5, 10 },
     increment = 0.5,
-    value = 2,
+    value = Settings.BestPetsCheckDelay,
     suffix = "s",
     flag = "BestPetsCheckDelay",
 
@@ -4067,7 +4416,7 @@ local PetFeedRow = PetsTab:CreateGroup()
 
 PetFeedRow:CreateToggle({
     name = "Auto Feed Best Pets",
-    value = false,
+    value = Settings.AutoFeedBestPets,
     flag = "AutoFeedBestPets",
 
     callback = function(Value)
@@ -4094,7 +4443,7 @@ PetFeedRow:CreateSlider({
     name = "Feed Delay",
     range = { 0.5, 15 },
     increment = 0.5,
-    value = 2,
+    value = Settings.AutoFeedBestPetsDelay,
     suffix = "s",
     flag = "AutoFeedBestPetsDelay",
 
@@ -4108,7 +4457,7 @@ local PetSellRow = PetsTab:CreateGroup()
 
 PetSellRow:CreateToggle({
     name = "Auto Sell Under Weight",
-    value = false,
+    value = Settings.AutoSellUnderWeight,
     flag = "AutoSellUnderWeight",
 
     callback = function(Value)
@@ -4141,7 +4490,7 @@ PetSellRow:CreateSlider({
     name = "Sell Below Weight",
     range = { 0.5, 100 },
     increment = 0.5,
-    value = 10,
+    value = Settings.SellWeightThreshold,
     suffix = " KG",
     flag = "SellWeightThreshold",
 
@@ -4160,14 +4509,14 @@ PetSellRow:CreateSlider({
 })
 
 
-
-
-
-
-
 --// ============================================================
 --// SETTINGS TAB
 --// ============================================================
+
+SettingsTab:CreateText({
+    name = APP.HubName,
+    text = APP.GameName .. " • " .. APP.Version .. "\nInterface, movement offsets, and utility controls."
+})
 
 
 local SettingsDropdownGrid = SettingsTab:CreateGroup()
@@ -4185,7 +4534,7 @@ local LanguageColumn =
 ThemeColumn:CreateDropdown({
     name = "Theme",
     options = ThemeOptions,
-    value = "cobalt",
+    value = APP.Theme,
     multiSelect = false,
     flag = "Theme",
 
@@ -4224,13 +4573,11 @@ LanguageColumn:CreateDropdown({
 })
 
 
-
-
 local UtilityRow = SettingsTab:CreateGroup()
 
 UtilityRow:CreateToggle({
     name = "Anti AFK",
-    value = true,
+    value = Settings.AntiAFK,
     flag = "AntiAFK",
 
     callback = function(Value)
@@ -4257,7 +4604,7 @@ OffsetRow:CreateSlider({
     name = "Egg Height Offset",
     range = { 0, 8 },
     increment = 0.25,
-    value = 2.5,
+    value = Settings.EggOffsetY,
     suffix = " studs",
     flag = "EggOffsetY",
 
@@ -4270,7 +4617,7 @@ OffsetRow:CreateSlider({
     name = "Egg Forward Offset",
     range = { -5, 5 },
     increment = 0.25,
-    value = 2,
+    value = Settings.EggOffsetZ,
     suffix = " studs",
     flag = "EggOffsetZ",
 
@@ -4283,7 +4630,7 @@ OffsetRow:CreateSlider({
     name = "Plot Height Offset",
     range = { 1, 12 },
     increment = 0.5,
-    value = 5,
+    value = Settings.PlotOffsetY,
     suffix = " studs",
     flag = "PlotOffsetY",
 
@@ -4355,7 +4702,7 @@ DiagnosticActions:CreateButton({
 
     callback = function()
         Notify(
-            "Shadow Garden",
+            APP.WindowName,
             "Rayfield Gen2 notification system is working.",
             4
         )
@@ -4367,7 +4714,7 @@ DiagnosticActions:CreateButton({
 
     callback = function()
         Toast(
-            "Shadow Garden",
+            APP.WindowName,
             "Toast system is working."
         )
     end
@@ -4388,8 +4735,8 @@ DiagnosticsTab:CreateButton({
 
     callback = function()
         Window:Popup({
-            title = "Shadow Garden",
-            subtitle = "Egg Hub",
+            title = APP.WindowName,
+            subtitle = APP.HubName .. " • " .. APP.Version,
 
             boxes = {
                 {
@@ -4420,6 +4767,14 @@ DiagnosticsTab:CreateButton({
                 {
                     title = "Gen2 Interface",
                 },
+                {
+                    title = "Polished Organization",
+                    description = "Centralized branding/settings, synced UI defaults, clean connection teardown, and a clearer dashboard.",
+                },
+                {
+                    title = "Preferred Eggs",
+                    description = "Cherub Egg > Solaris Egg.",
+                },
             },
 
             options = {
@@ -4447,21 +4802,33 @@ local function UnloadHub()
     Settings.AutoSellUnderWeight = false
     Settings.AntiAFK = false
 
-    if AntiAFKConnection then
-        AntiAFKConnection:Disconnect()
-        AntiAFKConnection = nil
-    end
+    AntiAFKConnection = nil
 
     CancelActiveMovement()
+    DisconnectConnections()
 
     pcall(function()
         Window:Unload()
     end)
 
-    getgenv().__SHADOW_GARDEN_UNLOAD = nil
+    if Environment[APP.UnloadKey] == UnloadHub then
+        Environment[APP.UnloadKey] = nil
+    end
+
+    if Environment[APP.LegacyUnloadKey] == UnloadHub then
+        Environment[APP.LegacyUnloadKey] = nil
+    end
+
+    print(
+        "[" .. APP.HubName .. "] "
+        .. APP.GameName
+        .. " unloaded"
+    )
 end
 
-getgenv().__SHADOW_GARDEN_UNLOAD = UnloadHub
+Environment[APP.UnloadKey] = UnloadHub
+-- Compatibility alias for one transition build.
+Environment[APP.LegacyUnloadKey] = UnloadHub
 
 SettingsTab:CreateButton({
     name = "Unload Hub",
@@ -4478,10 +4845,14 @@ task.spawn(function()
     local Plot = GetPlayerPlot()
 
     Notify(
-        "Shadow Garden",
-        "Loaded successfully."
+        APP.WindowName,
+        APP.HubName
+            .. " "
+            .. APP.Version
             .. "\nSelected Luck: "
             .. GetSelectedLuckText()
+            .. "\nPreferred Eggs: "
+            .. table.concat(PREFERRED_EGGS, " > ")
             .. "\nPlot: "
             .. tostring(
                 Plot and Plot.Name
@@ -4490,5 +4861,9 @@ task.spawn(function()
         6
     )
 
-    Log("Shadow Garden loaded")
+    Log(
+        APP.GameName
+            .. " loaded successfully • "
+            .. APP.Version
+    )
 end)
