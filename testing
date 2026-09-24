@@ -727,8 +727,8 @@ local AnimeBreakerTheme = {
 
 local Window =
     Rayfield:CreateWindow({
-        name = "Anime Breaker [🌳CLASS TREE]",
-        subtitle = "By. HollowMoonHub",
+        name = "Anime Breaker",
+        subtitle = "HollowMoonHub • 🌳 CLASS TREE",
         icon = "tree-pine",
         sidebarLayout = true,
         profile = "🌳 CLASS TREE",
@@ -759,16 +759,7 @@ local ShowcaseUI = {
 }
 
 
-Window:CreateTag({
-    text = "GEN2 • 🌳 CLASS TREE",
-    color = Color3.fromRGB(
-        83,
-        208,
-        116
-    ),
-    order = 1,
-})
-
+-- Compact header: keep only the useful live ACTIVE / IDLE badge.
 ShowcaseUI.StatusTag =
     Window:CreateTag({
         text = "IDLE",
@@ -777,20 +768,8 @@ ShowcaseUI.StatusTag =
             120,
             135
         ),
-        order = 2,
+        order = 1,
     })
-
-Window:CreateTag({
-    text = IS_MOBILE
-        and "MOBILE OPT"
-        or "DESKTOP",
-    color = Color3.fromRGB(
-        83,
-        208,
-        116
-    ),
-    order = 3,
-})
 
 
 Window:CreateSection({
@@ -1022,6 +1001,7 @@ local function GetCurrentWallMapCode()
     for _, MapCode in ipairs({
         "DBZ",
         "AOT",
+        "Nanatsu",
     }) do
         local Area =
             MapFolder:FindFirstChild(
@@ -6561,7 +6541,7 @@ local function GetNotificationObject()
 end
 
 
-local function HideCurrentNotification()
+local function DeleteCurrentNotification()
     local Notification =
         GetNotificationObject()
 
@@ -6569,19 +6549,9 @@ local function HideCurrentNotification()
         return false
     end
 
-    -- IMPORTANT:
-    -- Do not Destroy() the game's Notification object. NotifyService expects
-    -- that object/template (including its Main child) to continue existing.
-    -- Destroying it can produce:
-    --   "Main is not a valid member of ImageLabel 'Notification'"
     local Success =
         pcall(function()
-            if Notification:IsA(
-                "GuiObject"
-            ) then
-                Notification.Visible =
-                    false
-            end
+            Notification:Destroy()
         end)
 
     return Success
@@ -6591,31 +6561,27 @@ end
 task.spawn(function()
     while HubRunning do
         if Settings.AutoDeleteNotifications then
-            HideCurrentNotification()
+            local Notification =
+                GetNotificationObject()
 
-            -- Preserve the game's _DEBRIS folder itself. Some mobile clients
-            -- are more sensitive to core folders being destroyed/recreated.
-            -- Clearing children gets the visual cleanup without deleting the
-            -- container the game may still reference.
+            if Notification then
+                DeleteCurrentNotification()
+            end
+
+            -- OLD behavior: continuously destroy the whole _DEBRIS folder.
             local DebrisFolder =
                 Workspace:FindFirstChild(
                     "_DEBRIS"
                 )
 
             if DebrisFolder then
-                for _, Object in ipairs(
-                    DebrisFolder:GetChildren()
-                ) do
-                    pcall(function()
-                        Object:Destroy()
-                    end)
-                end
+                pcall(function()
+                    DebrisFolder:Destroy()
+                end)
             end
         end
 
-        task.wait(
-            IS_MOBILE and 0.25 or 0.10
-        )
+        task.wait(0.10)
     end
 end)
 
@@ -7832,7 +7798,7 @@ MiscActionRow:CreateToggle({
             Value
 
         if Value then
-            HideCurrentNotification()
+            DeleteCurrentNotification()
 
             local DebrisFolder =
                 Workspace:FindFirstChild(
@@ -7840,13 +7806,9 @@ MiscActionRow:CreateToggle({
                 )
 
             if DebrisFolder then
-                for _, Object in ipairs(
-                    DebrisFolder:GetChildren()
-                ) do
-                    pcall(function()
-                        Object:Destroy()
-                    end)
-                end
+                pcall(function()
+                    DebrisFolder:Destroy()
+                end)
             end
         end
 
