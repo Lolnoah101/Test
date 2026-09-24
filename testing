@@ -8,8 +8,28 @@ local Workspace = game:GetService("Workspace")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local VirtualUser = game:GetService("VirtualUser")
+local UserInputService = game:GetService("UserInputService")
 
 local LocalPlayer = Players.LocalPlayer
+
+-- Mobile executors/clients tend to be less stable when many 0.1s loops,
+-- full-PlayerGui scans, and Heartbeat remotes all run at the same time.
+-- Keep desktop behavior fast while automatically using slightly wider
+-- polling intervals on touch devices.
+local IS_MOBILE =
+    UserInputService.TouchEnabled
+
+local DeviceTiming = {
+    AutoClick = IS_MOBILE and 0.040 or 0,
+    WallClick = IS_MOBILE and 0.080 or 0.050,
+    FastPoll = IS_MOBILE and 0.150 or 0.100,
+    UiPoll = IS_MOBILE and 0.250 or 0.100,
+    RaidPoll = IS_MOBILE and 0.150 or 0.100,
+    MiscPoll = IS_MOBILE and 0.350 or 0.200,
+    PriorityRefresh = IS_MOBILE and 1.000 or 0.500,
+    DashboardRefresh = IS_MOBILE and 1.000 or 0.500,
+    AntiAFK = IS_MOBILE and 15 or 20,
+}
 
 -- Clean old copy.
 if getgenv().__ENERGY_HUB_UNLOAD then
@@ -31,64 +51,377 @@ local DataRemoteEvent =
 --// ============================================================
 
 local function LoadRayfield()
+    local Environment =
+        type(getgenv) == "function"
+        and getgenv()
+        or _G
+
+    local function IsRayfieldLibrary(
+        Value
+    )
+        return type(Value) == "table"
+            and type(
+                Value.CreateWindow
+            ) == "function"
+    end
+
+    -- Reuse the library if this executor session already loaded it.
+    local CachedLibrary =
+        Environment
+            .__HOLLOWMOON_RAYFIELD_GEN2
+
+    if IsRayfieldLibrary(
+        CachedLibrary
+    ) then
+        return CachedLibrary
+    end
+
+    local CacheFolder =
+        "HollowMoonHub"
+
+    local CacheFile =
+        CacheFolder
+        .. "/RayfieldGen2Cache.lua"
+
+    local LastError =
+        "No usable Rayfield source was returned"
+
+    local function RunSource(
+        Source,
+        Origin
+    )
+        if type(Source) ~= "string"
+            or Source == ""
+        then
+            return nil,
+                "Empty source from "
+                .. tostring(
+                    Origin
+                )
+        end
+
+        local Chunk,
+            CompileError =
+            loadstring(
+                Source
+            )
+
+        if type(Chunk) ~= "function" then
+            return nil,
+                "Compile failed from "
+                .. tostring(
+                    Origin
+                )
+                .. ": "
+                .. tostring(
+                    CompileError
+                )
+        end
+
+        local RunSuccess,
+            Library =
+            pcall(
+                Chunk
+            )
+
+        if not RunSuccess then
+            return nil,
+                "Run failed from "
+                .. tostring(
+                    Origin
+                )
+                .. ": "
+                .. tostring(
+                    Library
+                )
+        end
+
+        if not IsRayfieldLibrary(
+            Library
+        ) then
+            return nil,
+                "Rayfield CreateWindow API missing from "
+                .. tostring(
+                    Origin
+                )
+        end
+
+        Environment
+            .__HOLLOWMOON_RAYFIELD_GEN2 =
+                Library
+
+        return Library
+    end
+
+    local function SaveSourceCache(
+        Source
+    )
+        if type(writefile) ~= "function"
+            or type(Source) ~= "string"
+            or Source == ""
+        then
+            return
+        end
+
+        pcall(function()
+            if type(isfolder) == "function"
+                and type(makefolder) == "function"
+                and not isfolder(
+                    CacheFolder
+                )
+            then
+                makefolder(
+                    CacheFolder
+                )
+            end
+
+            writefile(
+                CacheFile,
+                Source
+            )
+        end)
+    end
+
+    local function LoadDiskCache()
+        if type(readfile) ~= "function" then
+            return nil
+        end
+
+        if type(isfile) == "function"
+            and not isfile(
+                CacheFile
+            )
+        then
+            return nil
+        end
+
+        local ReadSuccess,
+            Source =
+            pcall(
+                readfile,
+                CacheFile
+            )
+
+        if not ReadSuccess then
+            return nil
+        end
+
+        local Library,
+            CacheError =
+            RunSource(
+                Source,
+                "local cache"
+            )
+
+        if not Library then
+            LastError =
+                CacheError
+        end
+
+        return Library
+    end
+
+    -- A previous successful load can keep the UI working even if
+    -- sirius.menu is temporarily returning an empty response.
+    local DiskLibrary =
+        LoadDiskCache()
+
+    if DiskLibrary then
+        return DiskLibrary
+    end
+
+    local function FetchWithHttpGet(
+        Url
+    )
+        local Success,
+            Source =
+            pcall(function()
+                return game:HttpGet(
+                    Url,
+                    false
+                )
+            end)
+
+        if Success
+            and type(Source) == "string"
+            and Source ~= ""
+        then
+            return Source
+        end
+
+        return nil,
+            tostring(
+                Source
+            )
+    end
+
+    local function FetchWithRequest(
+        Url
+    )
+        local RequestFunction =
+            (
+                type(request) == "function"
+                and request
+            )
+            or (
+                type(http_request) == "function"
+                and http_request
+            )
+            or (
+                type(syn) == "table"
+                and type(syn.request) == "function"
+                and syn.request
+            )
+
+        if not RequestFunction then
+            return nil,
+                "request API unavailable"
+        end
+
+        local Success,
+            Response =
+            pcall(
+                RequestFunction,
+                {
+                    Url = Url,
+                    Method = "GET",
+                    Headers = {
+                        ["Cache-Control"] = "no-cache",
+                        ["Pragma"] = "no-cache",
+                    },
+                }
+            )
+
+        if not Success then
+            return nil,
+                tostring(
+                    Response
+                )
+        end
+
+        if type(Response) ~= "table" then
+            return nil,
+                "request returned no response table"
+        end
+
+        local StatusCode =
+            tonumber(
+                Response.StatusCode
+                or Response.Status
+            )
+
+        local Body =
+            Response.Body
+            or Response.body
+
+        if StatusCode
+            and (
+                StatusCode < 200
+                or StatusCode >= 300
+            )
+        then
+            return nil,
+                "HTTP "
+                .. tostring(
+                    StatusCode
+                )
+        end
+
+        if type(Body) ~= "string"
+            or Body == ""
+        then
+            return nil,
+                "empty request body"
+        end
+
+        return Body
+    end
+
     local Sources = {
         "https://sirius.menu/gen2",
         "https://sirius.menu/gen2-preview",
     }
 
-    local LastError = "Unknown error"
-
-    for _, Url in ipairs(Sources) do
-        local FetchSuccess, Source =
-            pcall(function()
-                return game:HttpGet(Url)
-            end)
-
-        if FetchSuccess
-            and typeof(Source) == "string"
-            and #Source > 0
-        then
-            local CompileSuccess, Chunk =
-                pcall(
-                    loadstring,
-                    Source
+    for _, Url in ipairs(
+        Sources
+    ) do
+        for Attempt = 1, 6 do
+            local Source,
+                FetchError =
+                FetchWithHttpGet(
+                    Url
                 )
 
-            if CompileSuccess
-                and typeof(Chunk) == "function"
-            then
-                local RunSuccess, Library =
-                    pcall(Chunk)
+            if not Source then
+                Source,
+                    FetchError =
+                    FetchWithRequest(
+                        Url
+                    )
+            end
 
-                if RunSuccess
-                    and Library
-                    and typeof(
-                        Library.CreateWindow
-                    ) == "function"
-                then
+            if Source then
+                local Library,
+                    RunError =
+                    RunSource(
+                        Source,
+                        Url
+                    )
+
+                if Library then
+                    SaveSourceCache(
+                        Source
+                    )
+
                     return Library
                 end
 
                 LastError =
-                    RunSuccess
-                    and "Loaded source but Rayfield API was missing"
-                    or tostring(Library)
+                    RunError
             else
                 LastError =
-                    tostring(Chunk)
+                    "Fetch failed from "
+                    .. tostring(
+                        Url
+                    )
+                    .. ": "
+                    .. tostring(
+                        FetchError
+                    )
             end
-        else
-            LastError =
-                tostring(Source)
+
+            if Attempt < 6 then
+                task.wait(
+                    math.min(
+                        0.35
+                        * Attempt,
+                        1.50
+                    )
+                )
+            end
         end
     end
 
+    -- One final cache attempt in case another copy of the hub wrote
+    -- the cache while the network retries were running.
+    DiskLibrary =
+        LoadDiskCache()
+
+    if DiskLibrary then
+        return DiskLibrary
+    end
+
     error(
-        "Rayfield failed to load: "
-            .. tostring(LastError),
+        "[Anime Breaker] Rayfield Gen2 could not be loaded. "
+        .. "Both Sirius endpoints returned no usable source and "
+        .. "no valid local cache exists. Last error: "
+        .. tostring(
+            LastError
+        ),
         0
     )
 end
+
 
 local Rayfield = LoadRayfield()
 
@@ -128,6 +461,7 @@ local Settings = {
     RaidLeaveWave = 10,
 
     AutoJoinTimeTrial = false,
+    TimeTrialInterruptRaid = true,
     SelectedTimeTrial = "The Hallway",
     SelectedTimeTrialDifficulty = "Easy",
     AutoLeaveTimeTrial = false,
@@ -136,6 +470,7 @@ local Settings = {
     AutoFarm = false,
     AutoFarmGamemode = false,
     AutoFarmTimeTrial = false,
+    AutoCollectCommandmentFragments = false,
 
     AutoDeleteNotifications = false,
     AutoMergeWeapons = false,
@@ -399,7 +734,7 @@ local Window =
         profile = "🌳 CLASS TREE",
         showName = "Anime Breaker",
         showIcon = "tree-pine",
-        showIconOnly = false,
+        showIconOnly = IS_MOBILE,
         theme = AnimeBreakerTheme,
 
         configuration = {
@@ -444,6 +779,18 @@ ShowcaseUI.StatusTag =
         ),
         order = 2,
     })
+
+Window:CreateTag({
+    text = IS_MOBILE
+        and "MOBILE OPT"
+        or "DESKTOP",
+    color = Color3.fromRGB(
+        83,
+        208,
+        116
+    ),
+    order = 3,
+})
 
 
 Window:CreateSection({
@@ -738,25 +1085,45 @@ local function SendWallClick()
 end
 
 
--- Combat/energy click stays as fast as the client Heartbeat.
-AutoClickConnection =
-    RunService.Heartbeat:Connect(function()
-        if not HubRunning
-            or not Settings.AutoClick
-        then
-            return
-        end
+-- Desktop can use every Heartbeat. On mobile, throttle to about
+-- 25 requests/sec so FPS drops/network scheduler stalls do not cascade
+-- into the rest of the automation.
+do
+    local LastAutoClickAt = 0
 
-        local Success, ErrorMessage =
-            pcall(SendClick)
+    AutoClickConnection =
+        RunService.Heartbeat:Connect(function()
+            if not HubRunning
+                or not Settings.AutoClick
+            then
+                return
+            end
 
-        if not Success then
-            warn(
-                "[Energy Hub] Auto Click: "
-                    .. tostring(ErrorMessage)
-            )
-        end
-    end)
+            if DeviceTiming.AutoClick > 0 then
+                local Now =
+                    os.clock()
+
+                if Now - LastAutoClickAt
+                    < DeviceTiming.AutoClick
+                then
+                    return
+                end
+
+                LastAutoClickAt =
+                    Now
+            end
+
+            local Success, ErrorMessage =
+                pcall(SendClick)
+
+            if not Success then
+                warn(
+                    "[Energy Hub] Auto Click: "
+                        .. tostring(ErrorMessage)
+                )
+            end
+        end)
+end
 
 
 -- Wall clicks use the SAME Auto Click toggle, but run separately.
@@ -775,9 +1142,13 @@ task.spawn(function()
                 )
             end
 
-            task.wait(0.05)
+            task.wait(
+                DeviceTiming.WallClick
+            )
         else
-            task.wait(0.10)
+            task.wait(
+                DeviceTiming.FastPoll
+            )
         end
     end
 end)
@@ -991,8 +1362,48 @@ local function GetGamemodeRaidEnemyFolder()
 end
 
 
+local function GetLocalRaidMapFolderEarly()
+    local Map =
+        Workspace:FindFirstChild(
+            "_MAP"
+        )
+
+    local Gamemode =
+        Map
+        and Map:FindFirstChild(
+            "Gamemode"
+        )
+
+    return Gamemode
+        and Gamemode:FindFirstChild(
+            "Raid_"
+            .. tostring(
+                LocalPlayer.UserId
+            )
+        )
+end
+
+
+local function HasLocalRaidMovementLock()
+    -- Do not let normal Auto Farm take movement back just because the
+    -- Raid enemy folder is temporarily empty/removed between waves.
+    -- The local Raid map folder is the stronger "still inside Raid" signal.
+    return GetGamemodeRaidEnemyFolder()
+        ~= nil
+        or GetLocalRaidMapFolderEarly()
+            ~= nil
+end
+
+
 local function GetActiveGamemodeFarmFolder()
-    -- Time Trial gets priority while its exact verified folder exists.
+    -- MOVEMENT PRIORITY:
+    -- 1) Active Time Trial
+    -- 2) Active Raid
+    -- 3) Commandment Fragment collector
+    -- 4) Normal Auto Farm
+    --
+    -- The fragment and normal-farm layers are handled by the main
+    -- farm worker below. This function resolves the two gamemodes.
     if Settings.AutoFarmTimeTrial then
         local TimeTrialFolder =
             GetTimeTrialEnemyFolder()
@@ -1003,7 +1414,6 @@ local function GetActiveGamemodeFarmFolder()
         end
     end
 
-    -- Raid farm remains separate and works exactly as before.
     if Settings.AutoFarmGamemode then
         local RaidFolder =
             GetGamemodeRaidEnemyFolder()
@@ -2050,13 +2460,58 @@ task.spawn(function()
                 local UseGamemode =
                     GamemodeFolder ~= nil
 
-                local UseNormalFarm =
-                    Settings.AutoFarm
-                    and not UseGamemode
+                -- A live gamemode always owns movement first.
+                if UseGamemode then
+                    Settings.__MovementPriorityState =
+                        GamemodeArea == "TimeTrial"
+                        and "Time Trial"
+                        or "Raid"
 
-                if not UseGamemode
-                    and not UseNormalFarm
-                then
+                -- CRITICAL RAID HOLD:
+                -- The server enemy folder can disappear for a moment between
+                -- waves / during boss transitions. Never let normal Auto Farm
+                -- interpret that gap as "Raid ended" and teleport back outside.
+                elseif HasLocalRaidMovementLock() then
+                    Settings.__MovementPriorityState =
+                        "Raid • Waiting For Next Wave"
+
+                    ResetCurrentFarmTarget()
+
+                    Settings.__FarmTargetMissingSince =
+                        nil
+
+                    Settings.__FarmLastMoveAt =
+                        0
+
+                    CancelFarmTween()
+                    StopLegitMovement()
+
+                    return
+
+                -- Commandment Fragments interrupt normal farming, but NEVER
+                -- interrupt a live Time Trial / Raid.
+                elseif Settings.__FragmentPriorityActive then
+                    Settings.__MovementPriorityState =
+                        "Commandment Fragment"
+
+                    ResetCurrentFarmTarget()
+
+                    Settings.__FarmTargetMissingSince =
+                        nil
+
+                    Settings.__FarmLastMoveAt =
+                        0
+
+                    return
+
+                elseif Settings.AutoFarm then
+                    Settings.__MovementPriorityState =
+                        "Normal Farm"
+
+                else
+                    Settings.__MovementPriorityState =
+                        "Idle"
+
                     ResetCurrentFarmTarget()
 
                     Settings.__FarmTargetMissingSince =
@@ -2067,6 +2522,10 @@ task.spawn(function()
 
                     return
                 end
+
+                local UseNormalFarm =
+                    Settings.AutoFarm
+                    and not UseGamemode
 
                 local TargetValid
 
@@ -2304,8 +2763,8 @@ task.spawn(function()
 end)
 
 
---// ============================================================
---// RAID RESULTS AUTO RETURN
+
+--// RESULTS AUTO RETURN (ALWAYS ON)
 --// ============================================================
 
 local function IsGuiActuallyVisible(Object)
@@ -2339,7 +2798,7 @@ local function IsGuiActuallyVisible(Object)
 end
 
 
-local function GetRaidReturnButton()
+local function GetResultsReturnButton()
     local PlayerGui =
         LocalPlayer:FindFirstChild(
             "PlayerGui"
@@ -2351,9 +2810,13 @@ local function GetRaidReturnButton()
             "Results"
         )
 
+    if not Results then
+        return nil
+    end
+
+    -- Prefer the normal path used by the game's Results screen.
     local Content =
-        Results
-        and Results:FindFirstChild(
+        Results:FindFirstChild(
             "Content"
         )
 
@@ -2363,16 +2826,40 @@ local function GetRaidReturnButton()
             "Buttons"
         )
 
-    return Buttons
+    local Button =
+        Buttons
         and Buttons:FindFirstChild(
             "Return"
         )
+
+    if Button
+        and Button:IsA("GuiButton")
+    then
+        return Button
+    end
+
+    -- Fallback for other result types/layouts (Raid, Time Trial, etc.).
+    local RecursiveButton =
+        Results:FindFirstChild(
+            "Return",
+            true
+        )
+
+    if RecursiveButton
+        and RecursiveButton:IsA(
+            "GuiButton"
+        )
+    then
+        return RecursiveButton
+    end
+
+    return nil
 end
 
 
-local function TryClickRaidReturn()
+local function TryClickResultsReturn()
     local Button =
-        GetRaidReturnButton()
+        GetResultsReturnButton()
 
     if not Button
         or not Button:IsA("GuiButton")
@@ -2413,22 +2900,48 @@ end
 
 
 task.spawn(function()
+    local LastLoggedButton =
+        nil
+
     while HubRunning do
         local Button =
-            GetRaidReturnButton()
+            GetResultsReturnButton()
 
         if Button
             and Button:IsA("GuiButton")
             and IsGuiActuallyVisible(Button)
         then
-            -- The Return button can stay visible during its countdown.
-            -- Keep trying. When the game finally allows the button,
-            -- one of these attempts will press it and close Results.
-            TryClickRaidReturn()
+            -- Always press Return whenever the game's Results screen exposes it.
+            -- This is intentionally global: Raid, Time Trial, and any other
+            -- result flow that uses PlayerGui.Results can use the same behavior.
+            if LastLoggedButton
+                ~= Button
+            then
+                LastLoggedButton =
+                    Button
 
-            task.wait(0.50)
+                Settings.__LastGamemodeExitReason =
+                    "Results Auto Return"
+
+                LogUI(
+                    "Results • Auto Return"
+                )
+            end
+
+            TryClickResultsReturn()
+
+            task.wait(
+                IS_MOBILE
+                and 0.35
+                or 0.25
+            )
         else
-            task.wait(0.20)
+            LastLoggedButton =
+                nil
+
+            task.wait(
+                DeviceTiming.MiscPoll
+            )
         end
     end
 end)
@@ -2665,6 +3178,17 @@ local GatchaConfigs = {
             }
         end,
     },
+
+    Sins = {
+        System = "Sin",
+        Banner = "Default",
+
+        BuildSpinData = function()
+            return {
+                Sin_Default_6 = true,
+            }
+        end,
+    },
 }
 
 
@@ -2737,7 +3261,9 @@ end
 local AutoGatchaBusy = false
 local GatchaCycleCursor = 1
 
-local GATCHA_CYCLE_DELAY = 0.50
+-- Moderately faster round-robin. Going extremely fast can make
+-- the server ignore/throttle spin requests, so keep some spacing.
+local GATCHA_CYCLE_DELAY = 0.30
 
 
 local function ResetGatchaCycle()
@@ -2831,7 +3357,7 @@ local function SpinSelectedGatchasOnce()
                 ErrorMessage
         end
 
-        task.wait(0.50)
+        task.wait(0.30)
     end
 
     AutoGatchaBusy = false
@@ -3284,6 +3810,14 @@ local UpgradeGroups = {
             "Energy",
         },
     },
+
+    ["Commandment Totem"] = {
+        Shop = "Commandment Totem",
+
+        Upgrades = {
+            "Stage",
+        },
+    },
 }
 
 
@@ -3296,6 +3830,7 @@ local UpgradeGroupOrder = {
     "Warrior Upgrades",
     "Offline Upgrades",
     "Ninja Progression",
+    "Commandment Totem",
 }
 
 
@@ -3456,9 +3991,9 @@ task.spawn(function()
             RunSelectedUpgradeStep()
         end
 
-        -- One purchase attempt per second, round-robin across all
-        -- selected upgrade groups.
-        task.wait(1)
+        -- Faster round-robin across selected upgrade groups without
+        -- bursting every upgrade remote in the same scheduler slice.
+        task.wait(0.45)
     end
 end)
 
@@ -3489,6 +4024,15 @@ local CardConfigs = {
     ["Leaf Card"] = {
         System = "Pet",
         Banner = "Naruto",
+
+        BuildSpinData = function()
+            return {}
+        end,
+    },
+
+    ["Sin Card"] = {
+        System = "Pet",
+        Banner = "Nanatsu",
 
         BuildSpinData = function()
             return {}
@@ -3529,6 +4073,8 @@ local function SpinSelectedCard()
             -- Uses the selected card config.
             -- Alien Card = GachaSystem / Spin / Pet / DBZ / {}
             -- Titan Card = GachaSystem / Spin / Pet / AOT / {}
+            -- Leaf Card = GachaSystem / Spin / Pet / Naruto / {}
+            -- Sin Card = GachaSystem / Spin / Pet / Nanatsu / {}
             DataRemoteEvent:FireServer({
                 {
                     "GachaSystem",
@@ -3626,6 +4172,12 @@ local RaidConfigs = {
 
     ["Titan Raid"] = {
         CreateCode = "AOT",
+        Difficulty = "Easy",
+        StartId = LocalPlayer.UserId,
+    },
+
+    ["Sin Raid"] = {
+        CreateCode = "Nanatsu",
         Difficulty = "Easy",
         StartId = LocalPlayer.UserId,
     },
@@ -3861,7 +4413,7 @@ local RAID_RERUN_COOLDOWN = 3.0
 
 local function IsRaidResultsVisible()
     local Button =
-        GetRaidReturnButton()
+        GetResultsReturnButton()
 
     return Button ~= nil
         and Button:IsA("GuiButton")
@@ -3890,7 +4442,6 @@ end
 
 
 local TIME_TRIAL_RETRY_DELAY = 0.50
-local TIME_TRIAL_PROBE_DELAY = 2.00
 local LastTimeTrialAttempt = 0
 local TimeTrialBusy = false
 
@@ -4029,85 +4580,832 @@ end
 
 -- Time Trial auto join:
 --
--- IMPORTANT:
--- workspace._MAP.Gamemode["Time Trial_-1"] is GLOBAL and may not exist yet
--- when the join window first opens if nobody else has entered.
+-- PRIORITY:
+-- Time Trial > Raid > Commandment Fragment > Normal Farm
 --
--- So the map folder is no longer required before Auto Join can try.
--- When no folder exists, we send a slower "probe" Enter every 2 seconds.
--- Once the folder exists, retries speed up to 0.5 seconds.
+-- IMPORTANT RAID GUARD:
+-- Auto Leave Raid is NOT the only system allowed to send GamemodeSystem/Quit.
+-- Time Trial priority can also leave a Raid, but ONLY when the actual Time
+-- Trial popup is visibly confirmed on-screen right now.
 --
--- The stop condition is still THIS player's own visible Gamemode HUD,
--- not the global map/enemy folders.
+-- Detection is intentionally strict:
+--   * "Time Trial is open!" must be visible
+--   * selected trial name must be in the SAME popup subtree
+--   * selected difficulty must be in the SAME popup subtree
+--   * "join now" must be in the SAME popup subtree
+--   * popup must stay visible briefly before a Raid can be interrupted
+--
+-- A short grace period is still allowed AFTER the Raid is gone so the script
+-- can finish joining if the popup disappears during the transition.
 task.spawn(function()
-    while HubRunning do
-        if Settings.AutoJoinTimeTrial
-            and not TimeTrialBusy
+    local LastRaidQuitForTimeTrial =
+        0
+
+    local RAID_QUIT_RETRY_DELAY =
+        0.75
+
+    local LastJoinPopupSeenAt =
+        0
+
+    local PopupFirstSeenAt =
+        nil
+
+    local JOIN_POPUP_GRACE =
+        1.50
+
+    local RAID_INTERRUPT_CONFIRM_TIME =
+        0.35
+
+    local function GetVisibleGuiText(
+        Object
+    )
+        if not Object
+            or not (
+                Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
+            )
+            or not IsGuiActuallyVisible(
+                Object
+            )
         then
-            local TimeTrialFolder =
-                GetTimeTrialMapFolder()
+            return ""
+        end
 
-            local SelectedConfig =
-                GetSelectedTimeTrialConfig()
+        local Value = ""
 
-            local FolderMatchesSelection =
-                true
+        pcall(function()
+            Value =
+                Object.ContentText
+        end)
 
-            -- If a global Time Trial folder exists and identifies a map,
-            -- only use it when it matches the selected trial.
-            -- If no folder exists yet, allow probe attempts anyway.
-            if TimeTrialFolder
-                and SelectedConfig
+        if typeof(Value) ~= "string"
+            or Value == ""
+        then
+            pcall(function()
+                Value =
+                    Object.Text
+            end)
+        end
+
+        return string.lower(
+            tostring(
+                Value or ""
+            )
+        )
+    end
+
+    local function PopupSubtreeMatches(
+        Root,
+        TrialName,
+        Difficulty
+    )
+        if not Root
+            or not Root.Parent
+        then
+            return false
+        end
+
+        if Root:IsA("GuiObject")
+            and not IsGuiActuallyVisible(
+                Root
+            )
+        then
+            return false
+        end
+
+        local HasOpenHeader =
+            false
+
+        local HasSelectedTrial =
+            false
+
+        local HasSelectedDifficulty =
+            false
+
+        local HasJoinText =
+            false
+
+        local Objects = {
+            Root,
+        }
+
+        for _, Descendant in ipairs(
+            Root:GetDescendants()
+        ) do
+            table.insert(
+                Objects,
+                Descendant
+            )
+        end
+
+        for _, Object in ipairs(
+            Objects
+        ) do
+            if Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
             then
-                local MapId =
-                    TimeTrialFolder:GetAttribute(
-                        "MapId"
+                local GuiText =
+                    GetVisibleGuiText(
+                        Object
                     )
 
-                if typeof(MapId) == "string"
-                    and MapId ~= ""
-                then
-                    FolderMatchesSelection =
-                        MapId
-                        == SelectedConfig.Name
+                if GuiText ~= "" then
+                    if string.find(
+                        GuiText,
+                        "time trial is open",
+                        1,
+                        true
+                    ) then
+                        HasOpenHeader =
+                            true
+                    end
+
+                    if string.find(
+                        GuiText,
+                        TrialName,
+                        1,
+                        true
+                    ) then
+                        HasSelectedTrial =
+                            true
+                    end
+
+                    if string.find(
+                        GuiText,
+                        Difficulty,
+                        1,
+                        true
+                    ) then
+                        HasSelectedDifficulty =
+                            true
+                    end
+
+                    if string.find(
+                        GuiText,
+                        "join now",
+                        1,
+                        true
+                    ) then
+                        HasJoinText =
+                            true
+                    end
                 end
             end
+        end
 
-            local LocalGamemodeActive =
-                IsLocalGamemodeActive()
+        return HasOpenHeader
+            and HasSelectedTrial
+            and HasSelectedDifficulty
+            and HasJoinText
+    end
 
+    local function IsTimeTrialJoinPopupVisible()
+        local PlayerGui =
+            LocalPlayer:FindFirstChild(
+                "PlayerGui"
+            )
+
+        local Config =
+            GetSelectedTimeTrialConfig()
+
+        if not PlayerGui
+            or not Config
+        then
+            return false
+        end
+
+        local TrialName =
+            string.lower(
+                tostring(
+                    Config.Name
+                )
+            )
+
+        local Difficulty =
+            string.lower(
+                tostring(
+                    Settings.SelectedTimeTrialDifficulty
+                    or "Easy"
+                )
+            )
+
+        -- First locate the visible header itself.
+        for _, Object in ipairs(
+            PlayerGui:GetDescendants()
+        ) do
+            if Object:IsA("TextLabel")
+                or Object:IsA("TextButton")
+                or Object:IsA("TextBox")
+            then
+                local GuiText =
+                    GetVisibleGuiText(
+                        Object
+                    )
+
+                if string.find(
+                    GuiText,
+                    "time trial is open",
+                    1,
+                    true
+                ) then
+                    -- Then only inspect nearby ancestors of THAT header.
+                    -- This prevents unrelated GUI text elsewhere in PlayerGui
+                    -- from combining into a false positive.
+                    local Candidate =
+                        Object
+
+                    for _ = 1, 7 do
+                        Candidate =
+                            Candidate
+                            and Candidate.Parent
+
+                        if not Candidate
+                            or Candidate == PlayerGui
+                            or Candidate:IsA(
+                                "LayerCollector"
+                            )
+                        then
+                            break
+                        end
+
+                        if PopupSubtreeMatches(
+                            Candidate,
+                            TrialName,
+                            Difficulty
+                        ) then
+                            return true
+                        end
+                    end
+                end
+            end
+        end
+
+        return false
+    end
+
+    local function QuitRaidForTimeTrial()
+        -- This is separate from Auto Leave Raid.
+        -- It is ONLY allowed when the user has explicitly enabled
+        -- Time Trial raid interruption.
+        if not Settings.AutoJoinTimeTrial
+            or not Settings.TimeTrialInterruptRaid
+            or not Settings.__TimeTrialJoinPromptOpen
+        then
+            return false
+        end
+
+        if not (
+            IsInsideLocalRaid()
+            or GetLocalRaidFolder() ~= nil
+        ) then
+            return false
+        end
+
+        local Now =
+            os.clock()
+
+        if Now - LastRaidQuitForTimeTrial
+            < RAID_QUIT_RETRY_DELAY
+        then
+            return false
+        end
+
+        LastRaidQuitForTimeTrial =
+            Now
+
+        Settings.__MovementPriorityState =
+            "Time Trial • Leaving Raid"
+
+        Settings.__LastGamemodeQuitReason =
+            "Time Trial Priority"
+
+        Settings.__LastGamemodeQuitAt =
+            os.clock()
+
+        local Config =
+            GetSelectedTimeTrialConfig()
+
+        Toast(
+            "Time Trial Priority",
+            "Leaving Raid for "
+                .. tostring(
+                    Config
+                    and Config.Name
+                    or "Time Trial"
+                )
+        )
+
+        LogUI(
+            "Gamemode Quit • Reason: Time Trial Priority"
+        )
+
+        local Success,
+            ErrorMessage =
+            pcall(function()
+                DataRemoteEvent:FireServer({
+                    {
+                        "GamemodeSystem",
+                        "Quit",
+                        n = 2,
+                    },
+                    "\x02",
+                })
+            end)
+
+        if not Success then
+            warn(
+                "[Anime Breaker] Time Trial Priority Raid Quit: "
+                    .. tostring(
+                        ErrorMessage
+                    )
+            )
+
+            return false
+        end
+
+        return true
+    end
+
+    while HubRunning do
+        local PopupVisible =
+            false
+
+        if Settings.AutoJoinTimeTrial then
+            PopupVisible =
+                IsTimeTrialJoinPopupVisible()
+
+            if PopupVisible then
+                LastJoinPopupSeenAt =
+                    os.clock()
+
+                if not PopupFirstSeenAt then
+                    PopupFirstSeenAt =
+                        os.clock()
+                end
+            else
+                PopupFirstSeenAt =
+                    nil
+            end
+        else
+            PopupFirstSeenAt =
+                nil
+        end
+
+        local JoinWindowActive =
+            Settings.AutoJoinTimeTrial
+            and (
+                PopupVisible
+                or (
+                    LastJoinPopupSeenAt > 0
+                    and os.clock()
+                        - LastJoinPopupSeenAt
+                        <= JOIN_POPUP_GRACE
+                )
+            )
+
+        Settings.__TimeTrialJoinPromptOpen =
+            JoinWindowActive
+
+        if JoinWindowActive
+            and not TimeTrialBusy
+        then
             local LocalRaidActive =
-                GetGamemodeRaidEnemyFolder()
+                IsInsideLocalRaid()
+                or GetLocalRaidFolder()
                     ~= nil
 
-            if FolderMatchesSelection
-                and not LocalGamemodeActive
-                and not LocalRaidActive
+            if LocalRaidActive then
+                -- CRITICAL:
+                -- Do NOT use the grace window to leave a Raid.
+                -- A Raid may only be interrupted while the popup is
+                -- visibly present RIGHT NOW and has stayed visible long
+                -- enough to rule out a one-frame/stale GUI detection.
+                local PopupConfirmed =
+                    PopupVisible
+                    and PopupFirstSeenAt ~= nil
+                    and os.clock()
+                        - PopupFirstSeenAt
+                        >= RAID_INTERRUPT_CONFIRM_TIME
+
+                if PopupConfirmed
+                    and Settings.TimeTrialInterruptRaid
+                then
+                    QuitRaidForTimeTrial()
+                end
+
+            elseif not IsLocalGamemodeContainerActive()
                 and not IsRaidResultsVisible()
             then
-                local RetryDelay =
-                    TimeTrialFolder
-                    and TIME_TRIAL_RETRY_DELAY
-                    or TIME_TRIAL_PROBE_DELAY
-
+                -- Once the Raid is gone, the grace window is okay here.
+                -- It only helps finish the join transition; it can no
+                -- longer kick the player out of a Raid.
                 local Now =
                     os.clock()
 
                 if Now - LastTimeTrialAttempt
-                    >= RetryDelay
+                    >= TIME_TRIAL_RETRY_DELAY
                 then
                     LastTimeTrialAttempt =
                         Now
+
+                    Settings.__MovementPriorityState =
+                        "Time Trial • Joining"
 
                     EnterTimeTrial()
                 end
             end
         end
 
-        task.wait(0.10)
+        task.wait(
+            DeviceTiming.UiPoll
+        )
     end
+
+    Settings.__TimeTrialJoinPromptOpen =
+        false
 end)
 
+
+
+--// ============================================================
+--// AUTO COLLECT COMMANDMENT FRAGMENTS
+--// Priority: Time Trial / Raid > Fragment > Normal Farm
+--// ============================================================
+
+do
+    local PromptLastAttempt = {}
+    local CurrentFragment = nil
+
+    local function GetSpawnItemTitle(
+        SpawnItem
+    )
+        if not SpawnItem
+            or not SpawnItem.Parent
+        then
+            return ""
+        end
+
+        local Gui =
+            SpawnItem:FindFirstChild(
+                "Gui"
+            )
+
+        local Title =
+            Gui
+            and Gui:FindFirstChild(
+                "Title"
+            )
+
+        if not Title
+            or not (
+                Title:IsA("TextLabel")
+                or Title:IsA("TextButton")
+                or Title:IsA("TextBox")
+            )
+        then
+            return ""
+        end
+
+        local Text =
+            Title.ContentText
+
+        if typeof(Text) ~= "string"
+            or Text == ""
+        then
+            Text =
+                Title.Text
+        end
+
+        return tostring(
+            Text or ""
+        )
+    end
+
+
+    local function IsCommandmentFragment(
+        SpawnItem
+    )
+        local Title =
+            string.lower(
+                GetSpawnItemTitle(
+                    SpawnItem
+                )
+            )
+
+        return string.find(
+            Title,
+            "commandment",
+            1,
+            true
+        ) ~= nil
+            and string.find(
+                Title,
+                "fragment",
+                1,
+                true
+            ) ~= nil
+    end
+
+
+    local function IsPlayerInProtectedGamemode()
+        -- These are LOCAL-player checks. A Time Trial existing globally
+        -- for somebody else does not block fragment collection.
+        return IsLocalGamemodeContainerActive()
+            or IsInsideLocalRaid()
+            or GetLocalRaidFolder() ~= nil
+            or IsRaidResultsVisible()
+    end
+
+
+    local function GetFragmentRoot(
+        SpawnItem
+    )
+        if not SpawnItem then
+            return nil
+        end
+
+        local Root =
+            SpawnItem:FindFirstChild(
+                "Root"
+            )
+
+        if Root
+            and Root:IsA(
+                "BasePart"
+            )
+        then
+            return Root
+        end
+
+        return Root
+            and Root:FindFirstChildWhichIsA(
+                "BasePart",
+                true
+            )
+            or nil
+    end
+
+
+    local function GetNearestFragment()
+        local SpawnItems =
+            Workspace:FindFirstChild(
+                "_SPAWNITEMS"
+            )
+
+        local PlayerRoot =
+            GetRootPart()
+
+        if not SpawnItems
+            or not PlayerRoot
+        then
+            return nil
+        end
+
+        local BestItem = nil
+        local BestDistance =
+            math.huge
+
+        for _, SpawnItem in ipairs(
+            SpawnItems:GetChildren()
+        ) do
+            if IsCommandmentFragment(
+                SpawnItem
+            ) then
+                local FragmentRoot =
+                    GetFragmentRoot(
+                        SpawnItem
+                    )
+
+                if FragmentRoot then
+                    local Distance =
+                        (
+                            PlayerRoot.Position
+                            - FragmentRoot.Position
+                        ).Magnitude
+
+                    if Distance
+                        < BestDistance
+                    then
+                        BestDistance =
+                            Distance
+
+                        BestItem =
+                            SpawnItem
+                    end
+                end
+            end
+        end
+
+        return BestItem
+    end
+
+
+    local function TeleportAndCollect(
+        SpawnItem
+    )
+        if not SpawnItem
+            or not SpawnItem.Parent
+        then
+            return false
+        end
+
+        local FragmentRoot =
+            GetFragmentRoot(
+                SpawnItem
+            )
+
+        local Prompt =
+            FragmentRoot
+            and FragmentRoot:FindFirstChildWhichIsA(
+                "ProximityPrompt",
+                true
+            )
+
+        local PlayerRoot =
+            GetRootPart()
+
+        if not FragmentRoot
+            or not Prompt
+            or not Prompt.Enabled
+            or not PlayerRoot
+        then
+            return false
+        end
+
+        local Now =
+            os.clock()
+
+        local LastAttempt =
+            PromptLastAttempt[
+                Prompt
+            ]
+            or 0
+
+        if Now - LastAttempt
+            < 0.25
+        then
+            return false
+        end
+
+        PromptLastAttempt[
+            Prompt
+        ] =
+            Now
+
+        -- Fragment owns movement over NORMAL Auto Farm.
+        Settings.__FragmentPriorityActive =
+            true
+
+        Settings.__MovementPriorityState =
+            "Commandment Fragment"
+
+        ResetCurrentFarmTarget()
+
+        CancelFarmTween()
+        StopLegitMovement()
+
+        local RotationOnly =
+            PlayerRoot.CFrame
+            - PlayerRoot.Position
+
+        -- Put the player close enough for the prompt, slightly above
+        -- the fragment instead of directly inside its Root part.
+        PlayerRoot.CFrame =
+            CFrame.new(
+                FragmentRoot.Position
+                + Vector3.new(
+                    0,
+                    2,
+                    0
+                )
+            )
+            * RotationOnly
+
+        PlayerRoot.AssemblyLinearVelocity =
+            Vector3.zero
+
+        PlayerRoot.AssemblyAngularVelocity =
+            Vector3.zero
+
+        task.wait(0.06)
+
+        if not SpawnItem.Parent
+            or not Prompt.Parent
+            or not Prompt.Enabled
+        then
+            return false
+        end
+
+        local Success,
+            ErrorMessage =
+            pcall(function()
+                if type(
+                    fireproximityprompt
+                ) ~= "function"
+                then
+                    error(
+                        "fireproximityprompt is unavailable"
+                    )
+                end
+
+                fireproximityprompt(
+                    Prompt
+                )
+            end)
+
+        if not Success then
+            warn(
+                "[Anime Breaker] Commandment Fragment: "
+                    .. tostring(
+                        ErrorMessage
+                    )
+            )
+        end
+
+        return Success
+    end
+
+
+    task.spawn(function()
+        while HubRunning do
+            if not Settings.AutoCollectCommandmentFragments then
+                Settings.__FragmentPriorityActive =
+                    false
+
+                CurrentFragment =
+                    nil
+
+                task.wait(0.25)
+
+            elseif IsPlayerInProtectedGamemode() then
+                -- Never let fragment collection steal movement from
+                -- Time Trial or Raid.
+                Settings.__FragmentPriorityActive =
+                    false
+
+                CurrentFragment =
+                    nil
+
+                task.wait(
+                    DeviceTiming.FastPoll
+                )
+
+            else
+                if not CurrentFragment
+                    or not CurrentFragment.Parent
+                    or not IsCommandmentFragment(
+                        CurrentFragment
+                    )
+                then
+                    CurrentFragment =
+                        GetNearestFragment()
+                end
+
+                if CurrentFragment then
+                    Settings.__FragmentPriorityActive =
+                        true
+
+                    TeleportAndCollect(
+                        CurrentFragment
+                    )
+                else
+                    Settings.__FragmentPriorityActive =
+                        false
+
+                    if Settings.AutoFarm then
+                        Settings.__MovementPriorityState =
+                            "Normal Farm"
+                    else
+                        Settings.__MovementPriorityState =
+                            "Idle"
+                    end
+                end
+
+                for Prompt in pairs(
+                    PromptLastAttempt
+                ) do
+                    if not Prompt
+                        or not Prompt.Parent
+                    then
+                        PromptLastAttempt[
+                            Prompt
+                        ] =
+                            nil
+                    end
+                end
+
+                task.wait(
+                    DeviceTiming.FastPoll
+                )
+            end
+        end
+
+        Settings.__FragmentPriorityActive =
+            false
+    end)
+end
 
 
 local function CanAutoStartSelectedRaid()
@@ -4118,7 +5416,24 @@ local function CanAutoStartSelectedRaid()
         return false
     end
 
-    if IsInsideLocalRaid() then
+    -- Priority rule: the visible Time Trial join window owns the next
+    -- gamemode slot before Auto Raid. The global map folder is not used
+    -- as the readiness signal because it can appear only after somebody joins.
+    if Settings.AutoJoinTimeTrial
+        and Settings.__TimeTrialJoinPromptOpen
+    then
+        return false
+    end
+
+    -- Never start a raid while this player is already inside any
+    -- active gamemode.
+    if IsLocalGamemodeContainerActive() then
+        return false
+    end
+
+    if IsInsideLocalRaid()
+        or GetLocalRaidFolder() ~= nil
+    then
         return false
     end
 
@@ -4164,7 +5479,9 @@ end
 task.spawn(function()
     while HubRunning do
         TryAutoStartSelectedRaid()
-        task.wait(0.35)
+        task.wait(
+            IS_MOBILE and 0.50 or 0.35
+        )
     end
 end)
 
@@ -4226,10 +5543,73 @@ local function GetCurrentRaidWave()
 end
 
 
-local function QuitCurrentGamemode()
+local function QuitCurrentGamemode(
+    Reason
+)
     if not HubRunning then
         return false, "Hub unloaded"
     end
+
+    Reason =
+        tostring(
+            Reason or "Unknown"
+        )
+
+    if Reason == "RaidAutoLeave" then
+        -- A wave-based Raid quit is impossible unless the actual
+        -- Auto Leave Raid toggle is ON and a local Raid still exists.
+        if not Settings.AutoLeaveRaid then
+            return false,
+                "Auto Leave Raid is disabled"
+        end
+
+        if not (
+            IsInsideLocalRaid()
+            or GetLocalRaidFolder() ~= nil
+        ) then
+            return false,
+                "No local Raid is active"
+        end
+
+    elseif Reason == "TimeTrialAutoLeave" then
+        -- Never allow the Time Trial leave worker to quit a Raid.
+        -- The old detection could temporarily confuse a Raid HUD with
+        -- a Time Trial when global Time Trial objects also existed.
+        if not Settings.AutoLeaveTimeTrial then
+            return false,
+                "Auto Leave Time Trial is disabled"
+        end
+
+        if IsInsideLocalRaid()
+            or GetLocalRaidFolder() ~= nil
+        then
+            return false,
+                "Blocked Time Trial leave while Raid is active"
+        end
+
+        if not GetTimeTrialMapFolder()
+            or not IsLocalGamemodeContainerActive()
+        then
+            return false,
+                "No confirmed local Time Trial"
+        end
+
+    else
+        return false,
+            "Blocked unrecognized quit reason: "
+            .. Reason
+    end
+
+    Settings.__LastGamemodeQuitReason =
+        Reason
+
+    Settings.__LastGamemodeQuitAt =
+        os.clock()
+
+    LogUI(
+        "Gamemode Quit • Reason: "
+        .. Reason
+    )
 
     local Success, ErrorMessage =
         pcall(function()
@@ -4245,8 +5625,12 @@ local function QuitCurrentGamemode()
 
     if not Success then
         warn(
-            "[Energy Hub] Raid Quit: "
-                .. tostring(ErrorMessage)
+            "[Anime Breaker] Gamemode Quit "
+                .. Reason
+                .. ": "
+                .. tostring(
+                    ErrorMessage
+                )
         )
 
         return false, ErrorMessage
@@ -4298,6 +5682,8 @@ task.spawn(function()
                 Wave
         end
 
+        -- This is the normal wave-based Auto Leave path.
+        -- It cannot fire unless the Auto Leave Raid toggle itself is enabled.
         if Settings.AutoLeaveRaid
             and RaidActive
             and not RaidAutoLeaveFired
@@ -4321,7 +5707,9 @@ task.spawn(function()
                     true
 
                 local Success, ErrorMessage =
-                    QuitCurrentGamemode()
+                    QuitCurrentGamemode(
+                        "RaidAutoLeave"
+                    )
 
                 if not Success then
                     RaidAutoLeaveFired =
@@ -4335,9 +5723,93 @@ task.spawn(function()
             end
         end
 
-        task.wait(0.10)
+        task.wait(
+            DeviceTiming.RaidPoll
+        )
     end
 end)
+
+
+--// ============================================================
+--// RAID EXIT DIAGNOSTICS
+--// ============================================================
+
+do
+    local WasRaidActive =
+        HasLocalRaidMovementLock()
+
+    local LastKnownWave =
+        nil
+
+    task.spawn(function()
+        while HubRunning do
+            local RaidActive =
+                HasLocalRaidMovementLock()
+
+            if RaidActive then
+                local Wave =
+                    GetCurrentRaidWave()
+
+                if Wave then
+                    LastKnownWave =
+                        Wave
+                end
+            end
+
+            if WasRaidActive
+                and not RaidActive
+            then
+                local LastQuitAt =
+                    tonumber(
+                        Settings.__LastGamemodeQuitAt
+                    )
+                    or 0
+
+                local QuitWasRecent =
+                    os.clock()
+                    - LastQuitAt
+                    <= 3.0
+
+                if QuitWasRecent then
+                    LogUI(
+                        "Raid ended • Hub Quit reason: "
+                        .. tostring(
+                            Settings.__LastGamemodeQuitReason
+                            or "Unknown"
+                        )
+                        .. " • Last wave "
+                        .. tostring(
+                            LastKnownWave
+                            or "?"
+                        )
+                    )
+                else
+                    Settings.__LastGamemodeExitReason =
+                        "No Hub Quit Packet"
+
+                    LogUI(
+                        "Raid ended WITHOUT a HollowMoonHub Quit packet"
+                        .. " • Last wave "
+                        .. tostring(
+                            LastKnownWave
+                            or "?"
+                        )
+                    )
+                end
+
+                LastKnownWave =
+                    nil
+            end
+
+            WasRaidActive =
+                RaidActive
+
+            task.wait(
+                DeviceTiming.RaidPoll
+            )
+        end
+    end)
+end
 
 
 --// ============================================================
@@ -4408,8 +5880,14 @@ local function IsLocalTimeTrialActiveForLeave()
         return false
     end
 
+    -- Strong Raid guard: both the server enemy folder and the
+    -- local Raid map folder must be absent before this can be treated
+    -- as a local Time Trial.
     if GetGamemodeRaidEnemyFolder()
         ~= nil
+        or GetLocalRaidFolder()
+            ~= nil
+        or IsInsideLocalRaid()
     then
         return false
     end
@@ -4482,7 +5960,9 @@ local function TryAutoLeaveTimeTrial()
         true
 
     local Success, ErrorMessage =
-        QuitCurrentGamemode()
+        QuitCurrentGamemode(
+            "TimeTrialAutoLeave"
+        )
 
     if not Success then
         TimeTrialAutoLeaveFired =
@@ -4515,8 +5995,9 @@ task.spawn(function()
             TryAutoLeaveTimeTrial
         )
 
-        -- 10 checks per second.
-        task.wait(0.10)
+        task.wait(
+            DeviceTiming.RaidPoll
+        )
     end
 end)
 
@@ -4937,7 +6418,9 @@ task.spawn(function()
             )
         end
 
-        task.wait(0.20)
+        task.wait(
+            DeviceTiming.MiscPoll
+        )
     end
 end)
 
@@ -5078,7 +6561,7 @@ local function GetNotificationObject()
 end
 
 
-local function DeleteCurrentNotification()
+local function HideCurrentNotification()
     local Notification =
         GetNotificationObject()
 
@@ -5086,9 +6569,19 @@ local function DeleteCurrentNotification()
         return false
     end
 
+    -- IMPORTANT:
+    -- Do not Destroy() the game's Notification object. NotifyService expects
+    -- that object/template (including its Main child) to continue existing.
+    -- Destroying it can produce:
+    --   "Main is not a valid member of ImageLabel 'Notification'"
     local Success =
         pcall(function()
-            Notification:Destroy()
+            if Notification:IsA(
+                "GuiObject"
+            ) then
+                Notification.Visible =
+                    false
+            end
         end)
 
     return Success
@@ -5098,29 +6591,31 @@ end
 task.spawn(function()
     while HubRunning do
         if Settings.AutoDeleteNotifications then
-            local Notification =
-                GetNotificationObject()
+            HideCurrentNotification()
 
-            if Notification then
-                DeleteCurrentNotification()
-            end
-
-            -- Use the same toggle to continuously clear workspace._DEBRIS.
-            -- If the game recreates the folder later, the next pass removes
-            -- it again without needing a separate setting or config flag.
+            -- Preserve the game's _DEBRIS folder itself. Some mobile clients
+            -- are more sensitive to core folders being destroyed/recreated.
+            -- Clearing children gets the visual cleanup without deleting the
+            -- container the game may still reference.
             local DebrisFolder =
                 Workspace:FindFirstChild(
                     "_DEBRIS"
                 )
 
             if DebrisFolder then
-                pcall(function()
-                    DebrisFolder:Destroy()
-                end)
+                for _, Object in ipairs(
+                    DebrisFolder:GetChildren()
+                ) do
+                    pcall(function()
+                        Object:Destroy()
+                    end)
+                end
             end
         end
 
-        task.wait(0.10)
+        task.wait(
+            IS_MOBILE and 0.25 or 0.10
+        )
     end
 end)
 
@@ -5136,32 +6631,157 @@ local function AntiAFKPulse()
         return false
     end
 
-    local Success =
+    local Success = false
+    local ErrorMessage = nil
+
+    -- Anime Breaker's own AFKController resets its timer whenever
+    -- Library.UserInput.InputBegan fires. Trigger that signal directly
+    -- when the executor supports firesignal. This avoids touching the
+    -- visible mouse/touch UI and directly resets the game's AFK timer.
+    local GameSignalSuccess,
+        GameSignalError =
         pcall(function()
-            local Camera =
-                Workspace.CurrentCamera
+            if type(firesignal) ~= "function" then
+                error(
+                    "firesignal is unavailable"
+                )
+            end
 
-            local CameraCFrame =
-                Camera
-                and Camera.CFrame
-                or CFrame.new()
+            local Framework =
+                ReplicatedStorage
+                    :WaitForChild(
+                        "Framework"
+                    )
 
-            -- VirtualUser is available across normal Roblox clients
-            -- and does not depend on game-specific remotes.
-            VirtualUser:CaptureController()
+            local LibraryModule =
+                Framework:WaitForChild(
+                    "Library"
+                )
 
-            VirtualUser:Button2Down(
-                Vector2.new(0, 0),
-                CameraCFrame
-            )
+            local Library =
+                require(
+                    LibraryModule
+                )
 
-            task.wait(0.05)
+            local UserInput =
+                Library
+                and Library.UserInput
 
-            VirtualUser:Button2Up(
-                Vector2.new(0, 0),
-                CameraCFrame
+            local InputBegan =
+                UserInput
+                and UserInput.InputBegan
+
+            if not InputBegan then
+                error(
+                    "Library.UserInput.InputBegan was not found"
+                )
+            end
+
+            -- AFKController's listener ignores the InputObject arguments;
+            -- firing the signal is enough to reset its internal timestamp.
+            firesignal(
+                InputBegan
             )
         end)
+
+    if GameSignalSuccess then
+        Success = true
+
+        Settings.__AntiAFKMethod =
+            "Game AFKController"
+    else
+        ErrorMessage =
+            GameSignalError
+
+        -- Fallback for environments where the executor cannot firesignal
+        -- the game's input signal.
+        local FallbackSuccess,
+            FallbackError =
+            pcall(function()
+                local Camera =
+                    Workspace.CurrentCamera
+
+                local CameraCFrame =
+                    Camera
+                    and Camera.CFrame
+                    or CFrame.new()
+
+                VirtualUser:CaptureController()
+
+                VirtualUser:Button2Down(
+                    Vector2.new(0, 0),
+                    CameraCFrame
+                )
+
+                task.wait(0.05)
+
+                VirtualUser:Button2Up(
+                    Vector2.new(0, 0),
+                    CameraCFrame
+                )
+            end)
+
+        if FallbackSuccess then
+            Success = true
+
+            Settings.__AntiAFKMethod =
+                "VirtualUser fallback"
+
+            ErrorMessage = nil
+        else
+            ErrorMessage =
+                tostring(
+                    GameSignalError
+                )
+                .. " | fallback: "
+                .. tostring(
+                    FallbackError
+                )
+        end
+    end
+
+    if Success then
+        Settings.__LastAntiAFKPulse =
+            os.clock()
+
+        Settings.__AntiAFKPulseCount =
+            (
+                tonumber(
+                    Settings.__AntiAFKPulseCount
+                )
+                or 0
+            )
+            + 1
+
+        Settings.__AntiAFKLastError =
+            nil
+    else
+        Settings.__AntiAFKLastError =
+            tostring(
+                ErrorMessage
+            )
+
+        local Now =
+            os.clock()
+
+        local LastWarn =
+            tonumber(
+                Settings.__AntiAFKLastWarn
+            )
+            or 0
+
+        if Now - LastWarn >= 30 then
+            Settings.__AntiAFKLastWarn =
+                Now
+
+            warn(
+                "[Anime Breaker] Anti AFK pulse failed: "
+                    .. tostring(
+                        ErrorMessage
+                    )
+            )
+        end
+    end
 
     return Success
 end
@@ -5174,14 +6794,17 @@ AntiAFKConnection =
     end)
 
 
--- Fallback trigger: send a lightweight keepalive periodically so
--- most sessions never reach the normal idle event in the first place.
+-- Fallback trigger: pulse frequently enough that Roblox should not
+-- normally reach its idle timeout. This only prevents Roblox inactivity;
+-- it cannot stop Android/iOS from suspending or closing Roblox/executor.
 task.spawn(function()
     while HubRunning do
         if Settings.AntiAFK then
             AntiAFKPulse()
 
-            task.wait(45)
+            task.wait(
+                DeviceTiming.AntiAFK
+            )
         else
             task.wait(1)
         end
@@ -5197,6 +6820,11 @@ MainTab:CreateSection({
     icon = "mouse-pointer-click",
 })
 
+
+-- Keep UI-only locals in a separate scope so Luau can reuse their
+-- registers later. Mobile/executor Luau has a hard ~200 local-register
+-- limit for one function/chunk.
+do
 
 local MainRow =
     MainTab:CreateGroup()
@@ -5237,7 +6865,6 @@ EnemyDropdown =
         value = {},
         multiSelect = true,
         flag = "SelectedEnemies",
-        forgetState = true,
 
         callback = function(Value)
             Settings.SelectedEnemies =
@@ -5265,8 +6892,8 @@ EnemyRefreshRow:CreateButton({
                 AreaName
             )
 
-        Settings.SelectedEnemies = {}
-
+        -- Refresh keeps any selected enemy names that still exist
+        -- in the new option list. Do not manually wipe the selection.
         if EnemyDropdown then
             EnemyDropdown:Refresh(
                 Options
@@ -5298,7 +6925,6 @@ EnemyPriorityDropdown =
         value = {},
         multiSelect = true,
         flag = "SelectedPriorityEnemies",
-        forgetState = true,
 
         callback = function(Value)
             Settings.SelectedPriorityEnemies =
@@ -5360,6 +6986,30 @@ FarmRow:CreateToggle({
 })
 
 
+FarmRow:CreateToggle({
+    name = "Auto Collect Commandment Fragments",
+    value = false,
+    flag = "AutoCollectCommandmentFragments",
+
+    callback = function(Value)
+        Settings.AutoCollectCommandmentFragments =
+            Value
+
+        if not Value then
+            Settings.__FragmentPriorityActive =
+                false
+        end
+
+        Toast(
+            "Commandment Fragments",
+            Value
+                and "Teleport + Collect Enabled"
+                or "Auto Collect Disabled"
+        )
+    end,
+})
+
+
 -- Enemy Priority stays global and updates automatically.
 -- The normal enemy dropdown only changes when Refresh Enemies is pressed.
 task.spawn(function()
@@ -5385,7 +7035,9 @@ task.spawn(function()
             )
         end
 
-        task.wait(0.50)
+        task.wait(
+            DeviceTiming.PriorityRefresh
+        )
     end
 end)
 
@@ -5466,6 +7118,7 @@ GatchaTab:CreateDropdown({
         "Titans",
         "Weapons",
         "Eye Techniques",
+        "Sins",
     },
     value = {
         "Races",
@@ -5637,6 +7290,7 @@ GatchaTab:CreateDropdown({
         "Warrior Upgrades",
         "Offline Upgrades",
         "Ninja Progression",
+        "Commandment Totem",
     },
     value = {
         "Time Trial Upgrades",
@@ -5702,6 +7356,7 @@ CardsTab:CreateDropdown({
         "Alien Card",
         "Titan Card",
         "Leaf Card",
+        "Sin Card",
         -- Add future cards here.
     },
     value = "Alien Card",
@@ -5757,6 +7412,7 @@ RaidTab:CreateDropdown({
     options = {
         "Alien Raid",
         "Titan Raid",
+        "Sin Raid",
     },
     value = "Alien Raid",
     multiSelect = false,
@@ -5989,6 +7645,11 @@ TimeTrialRow:CreateToggle({
         Settings.AutoJoinTimeTrial =
             Value
 
+        if not Value then
+            Settings.__TimeTrialJoinPromptOpen =
+                false
+        end
+
         LastTimeTrialAttempt =
             Value
             and (
@@ -6002,6 +7663,25 @@ TimeTrialRow:CreateToggle({
             Value
                 and "Enabled"
                 or "Disabled"
+        )
+    end,
+})
+
+
+TimeTrialRow:CreateToggle({
+    name = "Interrupt Raid For Time Trial",
+    value = true,
+    flag = "TimeTrialInterruptRaid",
+
+    callback = function(Value)
+        Settings.TimeTrialInterruptRaid =
+            Value
+
+        Toast(
+            "Time Trial Raid Priority",
+            Value
+                and "Will leave Raid for a confirmed Time Trial"
+                or "Will wait for Raid to end"
         )
     end,
 })
@@ -6119,7 +7799,11 @@ PlayerRow:CreateToggle({
         Toast(
             "Anti AFK",
             Value
-                and "Enabled"
+                and (
+                    IS_MOBILE
+                    and "Enabled • Mobile keepalive every 15s"
+                    or "Enabled • Game AFK timer reset every 20s"
+                )
                 or "Disabled"
         )
     end,
@@ -6148,7 +7832,7 @@ MiscActionRow:CreateToggle({
             Value
 
         if Value then
-            DeleteCurrentNotification()
+            HideCurrentNotification()
 
             local DebrisFolder =
                 Workspace:FindFirstChild(
@@ -6156,9 +7840,13 @@ MiscActionRow:CreateToggle({
                 )
 
             if DebrisFolder then
-                pcall(function()
-                    DebrisFolder:Destroy()
-                end)
+                for _, Object in ipairs(
+                    DebrisFolder:GetChildren()
+                ) do
+                    pcall(function()
+                        Object:Destroy()
+                    end)
+                end
             end
         end
 
@@ -6203,7 +7891,6 @@ MiscTab:CreateDropdown({
     value = {},
     multiSelect = true,
     flag = "SelectedPotions",
-    forgetState = true,
 
     callback = function(Value)
         Settings.SelectedPotions =
@@ -6594,7 +8281,7 @@ ShowcaseUI.DebugConsole =
     DiagnosticsTab:CreateConsole({
         name = "HollowMoonHub Console",
         text = "Anime Breaker [🌳CLASS TREE] initialized.",
-        height = 210,
+        height = IS_MOBILE and 145 or 210,
         follow = true,
         maxLines = 250,
     })
@@ -6614,6 +8301,7 @@ local AutomationSettingKeys = {
     "AutoFarm",
     "AutoFarmGamemode",
     "AutoFarmTimeTrial",
+    "AutoCollectCommandmentFragments",
     "AutoDeleteNotifications",
     "AutoMergeWeapons",
     "AutoUsePotions",
@@ -6785,7 +8473,9 @@ while HubRunning do
             end
         end)
 
-        task.wait(0.50)
+        task.wait(
+            DeviceTiming.DashboardRefresh
+        )
     end
 end)
 
@@ -6808,7 +8498,6 @@ SettingsTab:CreateDropdown({
     },
     value = "Class Tree",
     flag = "InterfaceTheme",
-    forgetState = true,
 
     callback = function(Value)
         pcall(function()
@@ -6867,6 +8556,9 @@ SettingsTab:CreateColorPicker({
 })
 
 
+end -- UI construction scope
+
+
 --// ============================================================
 --// UNLOAD
 --// ============================================================
@@ -6884,10 +8576,15 @@ local function UnloadHub()
     Settings.AutoStartRaid = false
     Settings.AutoLeaveRaid = false
     Settings.AutoJoinTimeTrial = false
+    Settings.TimeTrialInterruptRaid = false
+    Settings.__TimeTrialJoinPromptOpen = false
     Settings.AutoLeaveTimeTrial = false
     Settings.AutoFarm = false
     Settings.AutoFarmGamemode = false
     Settings.AutoFarmTimeTrial = false
+    Settings.AutoCollectCommandmentFragments = false
+    Settings.__FragmentPriorityActive = false
+    Settings.__MovementPriorityState = "Idle"
     Settings.AutoDeleteNotifications = false
     Settings.AutoMergeWeapons = false
     Settings.AutoUsePotions = false
@@ -6947,5 +8644,7 @@ LogUI(
 
 Toast(
     "Anime Breaker",
-    "🌳 CLASS TREE • HollowMoonHub"
+    IS_MOBILE
+        and "🌳 CLASS TREE • Mobile Optimized"
+        or "🌳 CLASS TREE • HollowMoonHub"
 )
