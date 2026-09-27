@@ -20344,8 +20344,10 @@ end
 --   * Skills_Provider resolves the real skill assigned to each selected key.
 --   * Skills_Module.Can_Skill filters cooldown/stamina/aura/mode requirements.
 --   * SHC is watched to confirm the skill actually started and finished.
---   * Max_Hold / explicit hold metadata marks a real hold/charge skill.
---   * Skills without hold metadata are tapped and released immediately.
+--   * Hold-capable does NOT mean hold-required.
+--   * Max_Hold / Holdable / CanHold alone are NOT enough to keep a key held.
+--   * Skills are tapped once by default.
+--   * Only explicit continuous/channel/repeat-while-held metadata is held.
 --   * SHC is still watched AFTER release so taps do not overlap incorrectly.
 --   * Round-robin skips unavailable/cooldown skills and advances immediately.
 
@@ -20406,6 +20408,12 @@ local AutoSkillController = {
     NearbyScanResult = false,
     NearbyScanInterval = 0.20,
     NearbyRange = 45,
+
+    -- Only use this for a skill proven to BENEFIT from continuous holding
+    -- (for example, repeating/ticking attacks while the button stays down).
+    -- A skill merely supporting hold input is NOT enough.
+    ForceHoldSkills = {
+    },
 }
 
 
@@ -21268,39 +21276,67 @@ function AutoSkillController:ShouldHoldSkill(
             0
     end
 
-    local MaxHold =
-        self:GetMaxHold(
-            Skill
+    local SkillName =
+        tostring(
+            Skill.Name
+            or ""
         )
 
-    if MaxHold > 0 then
+    ----------------------------------------------------------
+    -- MANUAL OVERRIDE
+    --
+    -- Keep this empty unless a particular skill is confirmed to actually
+    -- gain extra attacks/ticks/effect from remaining held.
+    ----------------------------------------------------------
+
+    if SkillName ~= ""
+        and self.ForceHoldSkills[
+            SkillName
+        ] == true
+    then
         return true,
-            MaxHold
+            self:GetMaxHold(
+                Skill
+            )
     end
 
     ----------------------------------------------------------
-    -- Some skill definitions may expose hold/charge intent with a
-    -- boolean instead of Max_Hold. Support the common field variants
-    -- without assuming every active SHC skill should be held.
+    -- IMPORTANT:
+    --
+    -- Max_Hold / Hold / Holdable / CanHold only tell us that the input CAN
+    -- remain held. They do NOT prove that holding produces additional damage
+    -- or repeated attacks, so those fields are intentionally ignored here.
     ----------------------------------------------------------
 
-    local BooleanFields = {
-        "Hold",
-        "Held",
-        "Holdable",
-        "CanHold",
-        "Can_Hold",
-        "RequiresHold",
-        "Requires_Hold",
-        "Charge",
-        "Chargeable",
-        "CanCharge",
-        "Can_Charge",
+    local ContinuousBooleanFields = {
+        "Continuous",
+        "IsContinuous",
+        "Is_Continuous",
+
+        "Channel",
+        "Channelled",
+        "Channeled",
+        "IsChannel",
+        "Is_Channel",
+
+        "RepeatWhileHeld",
+        "Repeat_While_Held",
+        "RepeatsWhileHeld",
+        "Repeats_While_Held",
+
+        "AttackWhileHeld",
+        "Attack_While_Held",
+
+        "TickWhileHeld",
+        "Tick_While_Held",
+
+        "LoopWhileHeld",
+        "Loop_While_Held",
     }
 
     for _,
         Field in ipairs(
-            BooleanFields
+            ContinuousBooleanFields
         )
     do
         if Skill[
@@ -21308,12 +21344,18 @@ function AutoSkillController:ShouldHoldSkill(
         ] == true
         then
             return true,
-                0
+                self:GetMaxHold(
+                    Skill
+                )
         end
     end
 
     ----------------------------------------------------------
     -- String metadata fallback.
+    --
+    -- Only strongly continuous words qualify. Generic "hold" / "charge"
+    -- wording is intentionally NOT enough because the user's tested skill
+    -- can be held but performs the same one-shot attack when released.
     ----------------------------------------------------------
 
     local StringFields = {
@@ -21326,6 +21368,20 @@ function AutoSkillController:ShouldHoldSkill(
         "SkillType",
         "Skill_Type",
         "Type",
+        "Mode",
+    }
+
+    local ContinuousWords = {
+        "continuous",
+        "channel",
+        "channeled",
+        "channelled",
+        "repeat",
+        "repeating",
+        "sustain",
+        "sustained",
+        "loop",
+        "ticking",
     }
 
     for _,
@@ -21347,29 +21403,35 @@ function AutoSkillController:ShouldHoldSkill(
                     Value
                 )
 
-            if string.find(
-                Lower,
-                "hold",
-                1,
-                true
-            )
-                or string.find(
+            for _,
+                Word in ipairs(
+                    ContinuousWords
+                )
+            do
+                if string.find(
                     Lower,
-                    "charge",
+                    Word,
                     1,
                     true
                 )
-            then
-                return true,
-                    0
+                then
+                    return true,
+                        self:GetMaxHold(
+                            Skill
+                        )
+                end
             end
         end
     end
 
+    ----------------------------------------------------------
+    -- DEFAULT:
+    -- TAP ONCE.
+    ----------------------------------------------------------
+
     return false,
         0
 end
-
 
 function AutoSkillController:WaitAfterTap(
     SkillName
@@ -21782,7 +21844,7 @@ function AutoSkillController:UseSelectedKey(
     end
 
     ----------------------------------------------------------
-    -- CONFIRMED HOLD / CHARGE SKILL
+    -- CONFIRMED CONTINUOUS / REPEAT-WHILE-HELD SKILL
     ----------------------------------------------------------
 
     if self.SkillController
@@ -21830,9 +21892,9 @@ function AutoSkillController:UseSelectedKey(
             )
 
     elseif Started then
-        -- Explicit hold metadata without Max_Hold:
+        -- Confirmed continuous metadata without a Max_Hold value:
         -- keep the input down only while the game's active skill state says
-        -- this confirmed hold skill is still executing.
+        -- the continuous skill is still executing.
         HeldFor,
             FinishReason =
             self:WaitNaturalSkill(
