@@ -450,12 +450,28 @@ local Settings = {
     WeaponSlot = 1,
     AutoEquipSlot = false,
 
+    -- Automatically equips the strongest Stats gear/accessories only.
+    -- It never touches the toolbar or equipped weapon.
+    AutoEquipBestEquipment = false,
+    BestEquipmentPriority = "Damage",
+
     AutoQuest = false,
     AutoFarmQuest = false,
     SelectedQuest = "Ill take 3 bandits",
 
-    -- General mob farm.
+    -- General mob/boss farm.
     AutoFarm = false,
+
+    -- Multi-select Enemy / Boss dropdown.
+    SelectedFarmMobs = {
+        "Bandit",
+    },
+
+    -- Independent all-boss mode. While enabled it behaves as if every boss
+    -- in the Enemy / Boss list were selected.
+    AutoFarmBoss = false,
+
+    -- Legacy mirror retained for old config compatibility.
     SelectedFarmMob = "Bandit",
 
     -- Dungeon enemies replicate under:
@@ -509,6 +525,16 @@ Settings.__CombatLastForcedUnhold = 0
 Settings.__AutoSellBusy = false
 Settings.__DungeonEntryBusy = false
 Settings.__RewardRoomBusy = false
+
+-- Normal loot should never interrupt combat with an NPC that is still
+-- actively targeting the player.
+Settings.__LootAggroCleanup = false
+
+-- World-boss post-kill reward stage.
+Settings.__BossRewardBusy = false
+Settings.__BossRewardCollecting = false
+Settings.__BossLootCenter = nil
+Settings.__BossLootRadius = nil
 
 -- Full captured combo:
 --   1 -> 0.13
@@ -577,8 +603,8 @@ local KnownLootRaritySet = {
 
 local Window =
     Rayfield:CreateWindow({
-        name = "Combat Hub",
-        subtitle = "HollowMoonHub",
+        name = "HollowMoonHub",
+        subtitle = "Automation Hub",
         sidebarLayout = true,
         theme = "cobalt",
         fallbackFont = Enum.Font.Gotham,
@@ -595,10 +621,31 @@ Window:CreateSection({
     name = "Automation"
 })
 
+-- Keep MainTab as the internal variable so existing feature code remains
+-- stable, but present it to the user as the Combat tab.
 local MainTab =
     Window:CreateTab({
-        name = "Main"
+        name = "Combat"
     })
+
+local FarmTab =
+    Window:CreateTab({
+        name = "Farm"
+    })
+
+local DungeonTab =
+    Window:CreateTab({
+        name = "Dungeon"
+    })
+
+local LootTab =
+    Window:CreateTab({
+        name = "Loot"
+    })
+
+Window:CreateSection({
+    name = "Utility"
+})
 
 local PlayerTab =
     Window:CreateTab({
@@ -622,6 +669,18 @@ local function Toast(Title, Subtitle)
             duration = 3,
         })
     end)
+end
+
+
+-- Routine diagnostics are disabled by default to keep the executor console
+-- clean. Warnings/errors still appear. Flip this locally when debugging.
+local HUB_DEBUG =
+    false
+
+local function HubDebug(...)
+    if HUB_DEBUG then
+        print(...)
+    end
 end
 
 -- Every weapon uses the same 1 -> 5 combo structure.
@@ -1188,6 +1247,2956 @@ task.spawn(function()
 end)
 
 
+
+--// ============================================================
+--// AUTO EQUIP BEST EQUIPMENT
+--// ============================================================
+--
+-- GEAR ONLY:
+--   Data.Inventory.Accessories.Stats.One ... Five
+--
+-- Exact captured equip call:
+--   SignalEvent.ToServer("AccessoryEquip", SlotName, ItemId, "Stats")
+--
+-- This controller NEVER touches:
+--   * Toolbar slots
+--   * WeaponSlot
+--   * Items_Config.Equipped
+--   * Toolbar_Equip
+--   * Vanity
+--   * Bait
+--
+-- Priority modes:
+--   Damage -> offensive combat stats
+--   Health -> survivability / defensive combat stats
+--
+-- EQUIP RULE:
+--   Only one Stats item from each InventoryCategory can be equipped.
+--   The highest-scoring item in each category is selected.
+--
+-- Refinement + Series scaling follows the game's ItemViewer behavior.
+
+local AutoBestEquipmentController = {
+    Running = false,
+    LoopID = 0,
+
+    ScanDelay = 1.50,
+
+    -- Only make one equipment change per scan. This lets the server/data
+    -- tree fully settle before the next decision and prevents slot ping-pong.
+    MaxChangesPerScan = 1,
+
+    -- Some Stats gear pieces are mutually exclusive even though the UI has
+    -- five generic slots. Learn those conflicts from actual server slot
+    -- changes instead of guessing every hidden gear category.
+    ConflictPairs = {},
+    ConflictSettleWait = 0.75,
+
+    LastDeniedLog = 0,
+    LastSummary = "",
+
+    SlotNames = {
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+    },
+
+    ModulesLoaded = false,
+    ModulesFailed = false,
+
+    Items = nil,
+    Menum = nil,
+    Utility = nil,
+    Refinement = nil,
+    Series = nil,
+    Checker = nil,
+    CharacterInfo = nil,
+    SignalEvent = nil,
+}
+
+
+function AutoBestEquipmentController:LoadModules()
+    if self.ModulesLoaded then
+        return true
+    end
+
+    if self.ModulesFailed then
+        return false
+    end
+
+    local CAM =
+        ReplicatedStorage:FindFirstChild(
+            "CAM"
+        )
+
+    local Global =
+        CAM
+        and CAM:FindFirstChild(
+            "Global"
+        )
+
+    local Collectibles =
+        Global
+        and Global:FindFirstChild(
+            "Collectibles"
+        )
+
+    local ItemsModule =
+        Collectibles
+        and Collectibles:FindFirstChild(
+            "Items"
+        )
+
+    local MenumModule =
+        Global
+        and Global:FindFirstChild(
+            "Menum"
+        )
+
+    local UtilityModule =
+        Global
+        and Global:FindFirstChild(
+            "Utility"
+        )
+
+    local RefinementModule =
+        Global
+        and Global:FindFirstChild(
+            "Refinement"
+        )
+
+    local SeriesModule =
+        Global
+        and Global:FindFirstChild(
+            "Series"
+        )
+
+    local CheckerModule =
+        Global
+        and Global:FindFirstChild(
+            "Checker"
+        )
+
+    local CharacterInfoModule =
+        Global
+        and Global:FindFirstChild(
+            "Character_info_provider"
+        )
+
+    local Communication =
+        ReplicatedStorage:FindFirstChild(
+            "Communication"
+        )
+
+    local ServerAndClient =
+        Communication
+        and Communication:FindFirstChild(
+            "ServerAndClient"
+        )
+
+    local Signals =
+        ServerAndClient
+        and ServerAndClient:FindFirstChild(
+            "Signals"
+        )
+
+    local SignalEventModule =
+        Signals
+        and Signals:FindFirstChild(
+            "SignalEvent"
+        )
+
+    if not ItemsModule
+        or not MenumModule
+        or not UtilityModule
+        or not SignalEventModule
+    then
+        self.ModulesFailed =
+            true
+
+        warn(
+            "[Combat Hub] Auto Best Equipment: required inventory modules not found"
+        )
+
+        return false
+    end
+
+    local ItemsOk,
+        Items =
+        pcall(
+            require,
+            ItemsModule
+        )
+
+    local MenumOk,
+        Menum =
+        pcall(
+            require,
+            MenumModule
+        )
+
+    local UtilityOk,
+        Utility =
+        pcall(
+            require,
+            UtilityModule
+        )
+
+    local SignalOk,
+        SignalEvent =
+        pcall(
+            require,
+            SignalEventModule
+        )
+
+    if not ItemsOk
+        or type(
+            Items
+        ) ~= "table"
+        or not MenumOk
+        or type(
+            Menum
+        ) ~= "table"
+        or not UtilityOk
+        or type(
+            Utility
+        ) ~= "table"
+        or not SignalOk
+        or type(
+            SignalEvent
+        ) ~= "table"
+    then
+        self.ModulesFailed =
+            true
+
+        warn(
+            "[Combat Hub] Auto Best Equipment: failed to load inventory modules"
+        )
+
+        return false
+    end
+
+    self.Items =
+        Items
+
+    self.Menum =
+        Menum
+
+    self.Utility =
+        Utility
+
+    self.SignalEvent =
+        SignalEvent
+
+    if RefinementModule then
+        local Ok,
+            Result =
+            pcall(
+                require,
+                RefinementModule
+            )
+
+        if Ok
+            and type(
+                Result
+            ) == "table"
+        then
+            self.Refinement =
+                Result
+        end
+    end
+
+    if SeriesModule then
+        local Ok,
+            Result =
+            pcall(
+                require,
+                SeriesModule
+            )
+
+        if Ok
+            and type(
+                Result
+            ) == "table"
+        then
+            self.Series =
+                Result
+        end
+    end
+
+    if CheckerModule then
+        local Ok,
+            Result =
+            pcall(
+                require,
+                CheckerModule
+            )
+
+        if Ok
+            and type(
+                Result
+            ) == "table"
+        then
+            self.Checker =
+                Result
+        end
+    end
+
+    if CharacterInfoModule then
+        local Ok,
+            Result =
+            pcall(
+                require,
+                CharacterInfoModule
+            )
+
+        if Ok
+            and type(
+                Result
+            ) == "table"
+        then
+            self.CharacterInfo =
+                Result
+        end
+    end
+
+    self.ModulesLoaded =
+        true
+
+    return true
+end
+
+
+function AutoBestEquipmentController:GetData()
+    if not self:LoadModules()
+        or type(
+            self.Utility.GetData
+        ) ~= "function"
+    then
+        return nil
+    end
+
+    local Success,
+        Data =
+        pcall(
+            self.Utility.GetData,
+            LocalPlayer,
+            true
+        )
+
+    if not Success
+        or Data == nil
+    then
+        return nil
+    end
+
+    -- The game's own Inventory module immediately uses Data.Inventory...
+    -- so this is an Instance-like data tree, not necessarily a Lua table.
+    local Inventory =
+        Data.Inventory
+
+    if Inventory == nil
+        or Inventory.Inventory == nil
+        or Inventory.Accessories == nil
+        or Inventory.Accessories.Stats == nil
+    then
+        return nil
+    end
+
+    return Data
+end
+
+function AutoBestEquipmentController:IsLoadoutChangeDenied()
+    if not self.Checker
+        or type(
+            self.Checker.DenyLoadoutChange
+        ) ~= "function"
+    then
+        return false
+    end
+
+    local Success,
+        Denied =
+        pcall(
+            self.Checker.DenyLoadoutChange,
+            LocalPlayer
+        )
+
+    return Success
+        and Denied
+        == true
+end
+
+
+function AutoBestEquipmentController:GetRefineLevel(
+    ItemInstance
+)
+    local Value =
+        ItemInstance
+        and ItemInstance:FindFirstChild(
+            "RefineLevel"
+        )
+
+    if Value
+        and Value:IsA(
+            "ValueBase"
+        )
+    then
+        return tonumber(
+            Value.Value
+        )
+            or 0
+    end
+
+    return 0
+end
+
+
+function AutoBestEquipmentController:GetItemId(
+    ItemInstance
+)
+    local Id =
+        ItemInstance
+        and ItemInstance:FindFirstChild(
+            "Id"
+        )
+
+    if not Id
+        or not Id:IsA(
+            "ValueBase"
+        )
+    then
+        return nil
+    end
+
+    local Value =
+        tonumber(
+            Id.Value
+        )
+
+    if not Value
+        or Value == 0
+    then
+        return nil
+    end
+
+    return Value
+end
+
+
+function AutoBestEquipmentController:GetSeriesMultiplier(
+    ItemInstance
+)
+    if not self.Series
+        or type(
+            self.Series.Multiplier
+        ) ~= "function"
+    then
+        return 1
+    end
+
+    local Success,
+        Value =
+        pcall(
+            self.Series.Multiplier,
+            ItemInstance
+        )
+
+    Value =
+        Success
+        and tonumber(
+            Value
+        )
+        or nil
+
+    if not Value
+        or Value <= 0
+    then
+        return 1
+    end
+
+    return Value
+end
+
+
+function AutoBestEquipmentController:GetRefinementMultiplier(
+    ItemName,
+    StatName,
+    RefineLevel
+)
+    if not self.Refinement
+        or type(
+            self.Refinement.GetStatMultiplier
+        ) ~= "function"
+    then
+        return 1
+    end
+
+    local Success,
+        Value =
+        pcall(
+            self.Refinement.GetStatMultiplier,
+            ItemName,
+            StatName,
+            RefineLevel
+        )
+
+    Value =
+        Success
+        and tonumber(
+            Value
+        )
+        or nil
+
+    if not Value
+        or Value <= 0
+    then
+        return 1
+    end
+
+    return Value
+end
+
+
+function AutoBestEquipmentController:GetPriority()
+    local Priority =
+        tostring(
+            Settings.BestEquipmentPriority
+            or "Damage"
+        )
+
+    if Priority
+        ~= "Damage"
+        and Priority
+            ~= "Health"
+    then
+        Priority =
+            "Damage"
+    end
+
+    return Priority
+end
+
+
+function AutoBestEquipmentController:NormalizeStatName(
+    StatName
+)
+    return string.lower(
+        string.gsub(
+            tostring(
+                StatName
+                or ""
+            ),
+            "_",
+            " "
+        )
+    )
+end
+
+
+function AutoBestEquipmentController:NormalizeStatMagnitude(
+    StatName,
+    Value
+)
+    Value =
+        tonumber(
+            Value
+        )
+        or 0
+
+    local Name =
+        self:NormalizeStatName(
+            StatName
+        )
+
+    local IsFactor =
+        string.find(
+            Name,
+            "factor",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "multiplier",
+            1,
+            true
+        )
+
+    if IsFactor
+        and Value >= 0.5
+        and Value <= 3
+    then
+        return (
+            Value - 1
+        ) * 100
+    end
+
+    local PercentageLike =
+        string.find(
+            Name,
+            "chance",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "reduction",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "speed",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "cooldown",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "critical",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "crit",
+            1,
+            true
+        )
+
+    if PercentageLike
+        and math.abs(
+            Value
+        ) <= 3
+    then
+        return Value
+            * 100
+    end
+
+    return Value
+end
+
+function AutoBestEquipmentController:GetDamageStatBucket(
+    StatName
+)
+    local Name =
+        self:NormalizeStatName(
+            StatName
+        )
+
+    if string.find(
+        Name,
+        "additional damage",
+        1,
+        true
+    )
+        and not string.find(
+            Name,
+            "factor",
+            1,
+            true
+        )
+        and not string.find(
+            Name,
+            "multiplier",
+            1,
+            true
+        )
+    then
+        return "FlatAdditionalDamage"
+    end
+
+    if string.find(
+        Name,
+        "additional damage factor",
+        1,
+        true
+    )
+        or (
+            string.find(
+                Name,
+                "additional damage",
+                1,
+                true
+            )
+            and (
+                string.find(
+                    Name,
+                    "factor",
+                    1,
+                    true
+                )
+                or string.find(
+                    Name,
+                    "multiplier",
+                    1,
+                    true
+                )
+            )
+        )
+    then
+        return "AdditionalDamageFactor"
+    end
+
+    if string.find(
+        Name,
+        "critical",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "crit",
+            1,
+            true
+        )
+    then
+        return "Crit"
+    end
+
+    if string.find(
+        Name,
+        "attack speed",
+        1,
+        true
+    )
+    then
+        return "AttackSpeed"
+    end
+
+    if string.find(
+        Name,
+        "damage",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "attack",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "strength",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "power",
+            1,
+            true
+        )
+    then
+        return "OtherDamage"
+    end
+
+    if string.find(
+        Name,
+        "cooldown",
+        1,
+        true
+    )
+    then
+        return "Cooldown"
+    end
+
+    return "Other"
+end
+
+
+function AutoBestEquipmentController:GetDamageComparisonVector(
+    Stats,
+    ItemName,
+    ItemInstance,
+    Definition
+)
+    local Vector = {
+        FlatAdditionalDamage = 0,
+        AdditionalDamageFactor = 0,
+        OtherDamage = 0,
+        Crit = 0,
+        AttackSpeed = 0,
+        Cooldown = 0,
+        OtherUseful = 0,
+    }
+
+    if type(
+        Stats
+    ) ~= "table"
+    then
+        return Vector
+    end
+
+    local RefineLevel =
+        self:GetRefineLevel(
+            ItemInstance
+        )
+
+    local SeriesMultiplier =
+        self:GetSeriesMultiplier(
+            ItemInstance
+        )
+
+    for StatName,
+        RawValue in pairs(
+            Stats
+        )
+    do
+        if type(
+            RawValue
+        ) == "number"
+            and RawValue ~= 0
+        then
+            local Value =
+                RawValue
+
+            if Definition.Refinable
+                == true
+            then
+                Value *=
+                    self:GetRefinementMultiplier(
+                        ItemName,
+                        StatName,
+                        RefineLevel
+                    )
+            end
+
+            Value *=
+                SeriesMultiplier
+
+            local Bucket =
+                self:GetDamageStatBucket(
+                    StatName
+                )
+
+            if Bucket
+                == "FlatAdditionalDamage"
+            then
+                Vector.FlatAdditionalDamage +=
+                    Value
+
+            elseif Bucket
+                == "AdditionalDamageFactor"
+            then
+                local Bonus =
+                    Value
+
+                if Bonus >= 0.5
+                    and Bonus <= 3
+                then
+                    Bonus =
+                        (
+                            Bonus - 1
+                        )
+                        * 100
+                elseif math.abs(
+                    Bonus
+                ) <= 0.5
+                then
+                    Bonus *=
+                        100
+                end
+
+                Vector.AdditionalDamageFactor +=
+                    Bonus
+
+            elseif Bucket
+                == "OtherDamage"
+            then
+                Vector.OtherDamage +=
+                    self:NormalizeStatMagnitude(
+                        StatName,
+                        Value
+                    )
+
+            elseif Bucket
+                == "Crit"
+            then
+                Vector.Crit +=
+                    self:NormalizeStatMagnitude(
+                        StatName,
+                        Value
+                    )
+
+            elseif Bucket
+                == "AttackSpeed"
+            then
+                Vector.AttackSpeed +=
+                    self:NormalizeStatMagnitude(
+                        StatName,
+                        Value
+                    )
+
+            elseif Bucket
+                == "Cooldown"
+            then
+                Vector.Cooldown +=
+                    self:NormalizeStatMagnitude(
+                        StatName,
+                        Value
+                    )
+
+            else
+                Vector.OtherUseful +=
+                    math.max(
+                        0,
+                        self:NormalizeStatMagnitude(
+                            StatName,
+                            Value
+                        )
+                    )
+            end
+        end
+    end
+
+    return Vector
+end
+
+
+function AutoBestEquipmentController:IsDamageCandidateBetter(
+    A,
+    B
+)
+    if B == nil then
+        return true
+    end
+
+    local AV =
+        A.DamageVector
+        or {}
+
+    local BV =
+        B.DamageVector
+        or {}
+
+    local Order = {
+        "FlatAdditionalDamage",
+        "AdditionalDamageFactor",
+        "OtherDamage",
+        "Crit",
+        "AttackSpeed",
+        "Cooldown",
+        "OtherUseful",
+    }
+
+    for _,
+        Key in ipairs(
+            Order
+        )
+    do
+        local AValue =
+            tonumber(
+                AV[
+                    Key
+                ]
+            )
+            or 0
+
+        local BValue =
+            tonumber(
+                BV[
+                    Key
+                ]
+            )
+            or 0
+
+        if math.abs(
+            AValue - BValue
+        ) > 0.000001
+        then
+            return AValue
+                > BValue
+        end
+    end
+
+    if A.RefineLevel
+        ~= B.RefineLevel
+    then
+        return A.RefineLevel
+            > B.RefineLevel
+    end
+
+    if A.Rarity
+        ~= B.Rarity
+    then
+        return A.Rarity
+            > B.Rarity
+    end
+
+    return A.Id
+        < B.Id
+end
+
+
+function AutoBestEquipmentController:GetDamageWeight(
+    StatName
+)
+    local Name =
+        self:NormalizeStatName(
+            StatName
+        )
+
+    if string.find(
+        Name,
+        "damage",
+        1,
+        true
+    )
+        and not string.find(
+            Name,
+            "damage reduction",
+            1,
+            true
+        )
+        and not string.find(
+            Name,
+            "damage taken",
+            1,
+            true
+        )
+    then
+        return 5.0
+    end
+
+    if string.find(
+        Name,
+        "critical",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "crit",
+            1,
+            true
+        )
+    then
+        return 4.5
+    end
+
+    if string.find(
+        Name,
+        "attack speed",
+        1,
+        true
+    )
+    then
+        return 4.25
+    end
+
+    if string.find(
+        Name,
+        "attack",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "strength",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "power",
+            1,
+            true
+        )
+    then
+        return 4.0
+    end
+
+    if string.find(
+        Name,
+        "cooldown",
+        1,
+        true
+    )
+    then
+        return 3.5
+    end
+
+    if string.find(
+        Name,
+        "penetration",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "pierce",
+            1,
+            true
+        )
+    then
+        return 3.0
+    end
+
+    if string.find(
+        Name,
+        "stamina",
+        1,
+        true
+    )
+    then
+        return 0.35
+    end
+
+    if string.find(
+        Name,
+        "health",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "defense",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "armour",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "armor",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "resistance",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "block",
+            1,
+            true
+        )
+    then
+        return 0
+    end
+
+    return 0.10
+end
+
+
+function AutoBestEquipmentController:GetHealthWeight(
+    StatName
+)
+    local Name =
+        self:NormalizeStatName(
+            StatName
+        )
+
+    if string.find(
+        Name,
+        "damage reduction",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "damage taken",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "damage received",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "incoming damage",
+            1,
+            true
+        )
+    then
+        return 5.0
+    end
+
+    if string.find(
+        Name,
+        "max health",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "health",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "life",
+            1,
+            true
+        )
+    then
+        if string.find(
+            Name,
+            "regen",
+            1,
+            true
+        )
+            or string.find(
+                Name,
+                "regeneration",
+                1,
+                true
+            )
+        then
+            return 4.0
+        end
+
+        return 4.75
+    end
+
+    if string.find(
+        Name,
+        "defense",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "armour",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "armor",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "resistance",
+            1,
+            true
+        )
+    then
+        return 4.5
+    end
+
+    if string.find(
+        Name,
+        "block",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "guard",
+            1,
+            true
+        )
+    then
+        return 3.75
+    end
+
+    if string.find(
+        Name,
+        "regen",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "recovery",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "healing",
+            1,
+            true
+        )
+    then
+        return 3.5
+    end
+
+    if string.find(
+        Name,
+        "stamina",
+        1,
+        true
+    )
+    then
+        return 0.50
+    end
+
+    if string.find(
+        Name,
+        "damage",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "attack",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "critical",
+            1,
+            true
+        )
+        or string.find(
+            Name,
+            "crit",
+            1,
+            true
+        )
+    then
+        return 0
+    end
+
+    return 0.10
+end
+
+
+function AutoBestEquipmentController:GetPriorityWeight(
+    StatName
+)
+    if self:GetPriority()
+        == "Health"
+    then
+        return self:GetHealthWeight(
+            StatName
+        )
+    end
+
+    return self:GetDamageWeight(
+        StatName
+    )
+end
+
+
+function AutoBestEquipmentController:IsLowerBetterStat(
+    StatName
+)
+    local Name =
+        self:NormalizeStatName(
+            StatName
+        )
+
+    -- Explicit positive reduction bonuses should NOT be inverted.
+    if string.find(
+        Name,
+        "reduction",
+        1,
+        true
+    )
+    then
+        return false
+    end
+
+    return string.find(
+        Name,
+        "cost",
+        1,
+        true
+    ) ~= nil
+        or string.find(
+            Name,
+            "delay",
+            1,
+            true
+        ) ~= nil
+        or string.find(
+            Name,
+            "damage taken",
+            1,
+            true
+        ) ~= nil
+        or string.find(
+            Name,
+            "damage received",
+            1,
+            true
+        ) ~= nil
+        or string.find(
+            Name,
+            "incoming damage",
+            1,
+            true
+        ) ~= nil
+end
+
+
+function AutoBestEquipmentController:ScoreStats(
+    Stats,
+    ItemName,
+    ItemInstance,
+    Definition
+)
+    if type(
+        Stats
+    ) ~= "table"
+    then
+        return 0,
+            0,
+            0
+    end
+
+    local RefineLevel =
+        self:GetRefineLevel(
+            ItemInstance
+        )
+
+    local SeriesMultiplier =
+        self:GetSeriesMultiplier(
+            ItemInstance
+        )
+
+    local Score =
+        0
+
+    local RelevantStats =
+        0
+
+    local TotalStats =
+        0
+
+    for StatName,
+        RawValue in pairs(
+            Stats
+        )
+    do
+        if type(
+            RawValue
+        ) == "number"
+            and RawValue ~= 0
+        then
+            TotalStats +=
+                1
+
+            local Value =
+                RawValue
+
+            if Definition.Refinable
+                == true
+            then
+                Value *=
+                    self:GetRefinementMultiplier(
+                        ItemName,
+                        StatName,
+                        RefineLevel
+                    )
+            end
+
+            Value *=
+                SeriesMultiplier
+
+            local Weight =
+                self:GetPriorityWeight(
+                    StatName
+                )
+
+            if Weight > 0 then
+                local Magnitude =
+                    self:NormalizeStatMagnitude(
+                        StatName,
+                        Value
+                    )
+
+                if self:IsLowerBetterStat(
+                    StatName
+                )
+                then
+                    Magnitude =
+                        -Magnitude
+                end
+
+                Score +=
+                    Magnitude
+                    * Weight
+
+                if Weight >= 1 then
+                    RelevantStats +=
+                        1
+                end
+            end
+        elseif RawValue
+            == true
+        then
+            TotalStats +=
+                1
+
+            local Weight =
+                self:GetPriorityWeight(
+                    StatName
+                )
+
+            if Weight > 0 then
+                Score +=
+                    5
+                    * Weight
+
+                if Weight >= 1 then
+                    RelevantStats +=
+                        1
+                end
+            end
+        end
+    end
+
+    return Score,
+        RelevantStats,
+        TotalStats
+end
+
+
+function AutoBestEquipmentController:BuildGearCandidate(
+    ItemInstance
+)
+    if not ItemInstance
+        or not ItemInstance.Parent
+    then
+        return nil
+    end
+
+    local ItemName =
+        ItemInstance.Name
+
+    local Definition =
+        self.Items[
+            ItemName
+        ]
+
+    if type(
+        Definition
+    ) ~= "table"
+    then
+        return nil
+    end
+
+    local Types =
+        self.Menum.ItemEquipType
+
+    if type(
+        Types
+    ) ~= "table"
+    then
+        return nil
+    end
+
+    local EquipType =
+        Definition.EquipType
+
+    local IsGear =
+        EquipType
+            == Types.Accessory
+        or EquipType
+            == Types.Costume
+        or EquipType
+            == Types.Clothing
+
+    if not IsGear then
+        return nil
+    end
+
+    if type(
+        Definition.Stats
+    ) ~= "table"
+    then
+        return nil
+    end
+
+    local Id =
+        self:GetItemId(
+            ItemInstance
+        )
+
+    if not Id then
+        return nil
+    end
+
+    local Score,
+        RelevantStats,
+        TotalStats =
+        self:ScoreStats(
+            Definition.Stats,
+            ItemName,
+            ItemInstance,
+            Definition
+        )
+
+    local DamageVector =
+        self:GetDamageComparisonVector(
+            Definition.Stats,
+            ItemName,
+            ItemInstance,
+            Definition
+        )
+
+    if TotalStats <= 0 then
+        return nil
+    end
+
+    local Rarity =
+        tonumber(
+            Definition.Rarity
+        )
+        or 0
+
+    local RefineLevel =
+        self:GetRefineLevel(
+            ItemInstance
+        )
+
+    -- Priority stats determine the winner. Rarity/refine are deliberately
+    -- tiny tie-breakers so "Damage" and "Health" actually mean what they say.
+    Score +=
+        Rarity
+        * 0.0001
+        + RefineLevel
+        * 0.00001
+
+    return {
+        Name =
+            ItemName,
+
+        Id =
+            Id,
+
+        Score =
+            Score,
+
+        DamageVector =
+            DamageVector,
+
+        RelevantStats =
+            RelevantStats,
+
+        TotalStats =
+            TotalStats,
+
+        Rarity =
+            Rarity,
+
+        RefineLevel =
+            RefineLevel,
+
+        -- InventoryCategory is diagnostic only. Multiple gear pieces from
+        -- the same category are allowed and are NOT filtered out.
+        InventoryCategory =
+            Definition.InventoryCategory,
+
+        EquipType =
+            EquipType,
+
+        Instance =
+            ItemInstance,
+    }
+end
+
+
+function AutoBestEquipmentController:GetInventoryItemById(
+    Data,
+    ItemId
+)
+    ItemId =
+        tonumber(
+            ItemId
+        )
+
+    if not ItemId
+        or ItemId == 0
+    then
+        return nil
+    end
+
+    -- The game's Inventory UI uses Character_info_provider.GetItemFromId
+    -- for equipped accessory IDs. Prefer the same lookup here.
+    if self.CharacterInfo
+        and type(
+            self.CharacterInfo.GetItemFromId
+        ) == "function"
+    then
+        local Success,
+            Item =
+            pcall(
+                self.CharacterInfo.GetItemFromId,
+                LocalPlayer,
+                ItemId
+            )
+
+        if Success
+            and Item
+        then
+            return Item
+        end
+    end
+
+    -- Fallback to scanning the inventory data tree.
+    local Inventory =
+        Data
+        and Data.Inventory
+        and Data.Inventory.Inventory
+
+    if not Inventory then
+        return nil
+    end
+
+    for _,
+        ItemInstance in ipairs(
+            Inventory:GetChildren()
+        )
+    do
+        local Id =
+            ItemInstance:FindFirstChild(
+                "Id"
+            )
+
+        if Id
+            and Id:IsA(
+                "ValueBase"
+            )
+            and tonumber(
+                Id.Value
+            ) == ItemId
+        then
+            return ItemInstance
+        end
+    end
+
+    return nil
+end
+
+function AutoBestEquipmentController:GetInventoryItemNameById(
+    Data,
+    ItemId
+)
+    local ItemInstance =
+        self:GetInventoryItemById(
+            Data,
+            ItemId
+        )
+
+    return ItemInstance
+        and ItemInstance.Name
+        or nil
+end
+
+
+function AutoBestEquipmentController:GetConflictKey(
+    NameA,
+    NameB
+)
+    NameA =
+        tostring(
+            NameA
+            or ""
+        )
+
+    NameB =
+        tostring(
+            NameB
+            or ""
+        )
+
+    if NameA == ""
+        or NameB == ""
+        or NameA == NameB
+    then
+        return nil
+    end
+
+    if NameA < NameB then
+        return NameA
+            .. "\0"
+            .. NameB
+    end
+
+    return NameB
+        .. "\0"
+        .. NameA
+end
+
+
+function AutoBestEquipmentController:HasConflict(
+    NameA,
+    NameB
+)
+    local Key =
+        self:GetConflictKey(
+            NameA,
+            NameB
+        )
+
+    return Key ~= nil
+        and self.ConflictPairs[
+            Key
+        ] == true
+end
+
+
+function AutoBestEquipmentController:LearnConflict(
+    NameA,
+    NameB
+)
+    local Key =
+        self:GetConflictKey(
+            NameA,
+            NameB
+        )
+
+    if not Key then
+        return false
+    end
+
+    if self.ConflictPairs[
+        Key
+    ] then
+        return false
+    end
+
+    self.ConflictPairs[
+        Key
+    ] =
+        true
+
+    warn(
+        "[Combat Hub] Auto Best Equipment: learned SPECIFIC gear conflict • "
+            .. tostring(
+                NameA
+            )
+            .. " ↔ "
+            .. tostring(
+                NameB
+            )
+            .. " • this is NOT a category restriction"
+    )
+
+    return true
+end
+
+function AutoBestEquipmentController:BuildCompatibleDesiredSet(
+    Candidates
+)
+    local Desired =
+        {}
+
+    local UsedCategories =
+        {}
+
+    for _,
+        Candidate in ipairs(
+            Candidates
+        )
+    do
+        local Category =
+            Candidate.InventoryCategory
+
+        local CategoryKey
+
+        if Category ~= nil
+            and tostring(
+                Category
+            ) ~= ""
+        then
+            CategoryKey =
+                tostring(
+                    Category
+                )
+        else
+            -- If an item definition is missing InventoryCategory, do not
+            -- incorrectly merge it with unrelated gear.
+            CategoryKey =
+                "__ITEM__"
+                .. tostring(
+                    Candidate.Name
+                )
+        end
+
+        if not UsedCategories[
+            CategoryKey
+        ]
+        then
+            UsedCategories[
+                CategoryKey
+            ] =
+                true
+
+            table.insert(
+                Desired,
+                Candidate
+            )
+
+            if #Desired >= 5 then
+                break
+            end
+        end
+    end
+
+    return Desired
+end
+
+function AutoBestEquipmentController:FindCandidateByName(
+    Candidates,
+    Name
+)
+    for _,
+        Candidate in ipairs(
+            Candidates
+        )
+    do
+        if Candidate.Name == Name then
+            return Candidate
+        end
+    end
+
+    return nil
+end
+
+
+function AutoBestEquipmentController:SnapshotStatsSlots(
+    Data,
+    StatsSlots
+)
+    local Snapshot =
+        {}
+
+    for _,
+        SlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        local Slot =
+            StatsSlots:FindFirstChild(
+                SlotName
+            )
+
+        local Id =
+            Slot
+            and tonumber(
+                Slot.Value
+            )
+            or 0
+
+        Snapshot[
+            SlotName
+        ] = {
+            Id =
+                Id,
+
+            Name =
+                Id ~= 0
+                and self:GetInventoryItemNameById(
+                    Data,
+                    Id
+                )
+                or nil,
+        }
+    end
+
+    return Snapshot
+end
+
+
+function AutoBestEquipmentController:TryEquipAndDetectConflict(
+    Data,
+    StatsSlots,
+    SlotName,
+    Candidate,
+    Candidates
+)
+    local Before =
+        self:SnapshotStatsSlots(
+            Data,
+            StatsSlots
+        )
+
+    local Sent =
+        self:SendAccessoryEquip(
+            SlotName,
+            Candidate.Id
+        )
+
+    if not Sent then
+        return false,
+            false
+    end
+
+    local Applied =
+        self:WaitForStatsSlot(
+            StatsSlots,
+            SlotName,
+            Candidate.Id,
+            1.50
+        )
+
+    if not Applied then
+        return false,
+            false
+    end
+
+    task.wait(
+        self.ConflictSettleWait
+    )
+
+    ----------------------------------------------------------
+    -- SAME-CATEGORY DISPLACEMENT IS EXPECTED.
+    --
+    -- The game allows only one Stats item from each inventory
+    -- category. Because BuildCompatibleDesiredSet already chooses
+    -- the highest-scoring item in each category, a same-category
+    -- displacement is not treated as an unknown conflict.
+    ----------------------------------------------------------
+
+    local LearnedAny =
+        false
+
+    for _,
+        OtherSlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        if OtherSlotName
+            ~= SlotName
+        then
+            local BeforeInfo =
+                Before[
+                    OtherSlotName
+                ]
+
+            local OtherSlot =
+                StatsSlots:FindFirstChild(
+                    OtherSlotName
+                )
+
+            local AfterId =
+                OtherSlot
+                and tonumber(
+                    OtherSlot.Value
+                )
+                or 0
+
+            if BeforeInfo
+                and BeforeInfo.Id ~= 0
+                and BeforeInfo.Id ~= AfterId
+                and BeforeInfo.Name
+                and BeforeInfo.Name
+                    ~= Candidate.Name
+            then
+                local Displaced =
+                    self:FindCandidateByName(
+                        Candidates,
+                        BeforeInfo.Name
+                    )
+
+                local SameCategory =
+                    Displaced
+                    and Candidate.InventoryCategory ~= nil
+                    and Displaced.InventoryCategory ~= nil
+                    and tostring(
+                        Candidate.InventoryCategory
+                    ) == tostring(
+                        Displaced.InventoryCategory
+                    )
+
+                if SameCategory then
+                    HubDebug(
+                        "[Combat Hub] Auto Best Equipment: category replacement • "
+                            .. tostring(
+                                Candidate.InventoryCategory
+                            )
+                            .. " • "
+                            .. tostring(
+                                BeforeInfo.Name
+                            )
+                            .. " → "
+                            .. tostring(
+                                Candidate.Name
+                            )
+                    )
+                else
+                    -- Keep the learned-pair fallback only for unexpected
+                    -- cross-category restrictions.
+                    if self:LearnConflict(
+                        Candidate.Name,
+                        BeforeInfo.Name
+                    )
+                    then
+                        LearnedAny =
+                            true
+                    end
+
+                    warn(
+                        "[Combat Hub] Auto Best Equipment: unexpected cross-category displacement • "
+                            .. tostring(
+                                BeforeInfo.Name
+                            )
+                            .. " → "
+                            .. tostring(
+                                Candidate.Name
+                            )
+                    )
+                end
+            end
+        end
+    end
+
+    return true,
+        LearnedAny
+end
+
+function AutoBestEquipmentController:GetGearCandidates()
+    local Data =
+        self:GetData()
+
+    local Inventory =
+        Data
+        and Data.Inventory
+        and Data.Inventory.Inventory
+
+    if not Inventory then
+        return nil,
+            {}
+    end
+
+    local BestByName =
+        {}
+
+    local Priority =
+        self:GetPriority()
+
+    local function Better(
+        A,
+        B
+    )
+        if B == nil then
+            return true
+        end
+
+        if Priority
+            == "Damage"
+        then
+            return self:IsDamageCandidateBetter(
+                A,
+                B
+            )
+        end
+
+        if A.Score
+            ~= B.Score
+        then
+            return A.Score
+                > B.Score
+        end
+
+        if A.RelevantStats
+            ~= B.RelevantStats
+        then
+            return A.RelevantStats
+                > B.RelevantStats
+        end
+
+        if A.RefineLevel
+            ~= B.RefineLevel
+        then
+            return A.RefineLevel
+                > B.RefineLevel
+        end
+
+        if A.Rarity
+            ~= B.Rarity
+        then
+            return A.Rarity
+                > B.Rarity
+        end
+
+        return A.Id
+            < B.Id
+    end
+
+    for _,
+        ItemInstance in ipairs(
+            Inventory:GetChildren()
+        )
+    do
+        local Candidate =
+            self:BuildGearCandidate(
+                ItemInstance
+            )
+
+        if Candidate then
+            local Existing =
+                BestByName[
+                    Candidate.Name
+                ]
+
+            if Better(
+                Candidate,
+                Existing
+            )
+            then
+                BestByName[
+                    Candidate.Name
+                ] =
+                    Candidate
+            end
+        end
+    end
+
+    local Gear =
+        {}
+
+    for _,
+        Candidate in pairs(
+            BestByName
+        )
+    do
+        table.insert(
+            Gear,
+            Candidate
+        )
+    end
+
+    table.sort(
+        Gear,
+        function(A, B)
+            return Better(
+                A,
+                B
+            )
+        end
+    )
+
+    return Data,
+        Gear
+end
+
+function AutoBestEquipmentController:WaitForStatsSlot(
+    StatsSlots,
+    SlotName,
+    ItemId,
+    Timeout
+)
+    local Slot =
+        StatsSlots
+        and StatsSlots:FindFirstChild(
+            SlotName
+        )
+
+    if not Slot then
+        return false
+    end
+
+    local StartedAt =
+        os.clock()
+
+    Timeout =
+        tonumber(
+            Timeout
+        )
+        or 1.25
+
+    while HubRunning
+        and Settings.AutoEquipBestEquipment
+        and os.clock()
+            - StartedAt
+            < Timeout
+    do
+        if tonumber(
+            Slot.Value
+        ) == ItemId
+        then
+            return true
+        end
+
+        task.wait(
+            0.08
+        )
+    end
+
+    return tonumber(
+        Slot.Value
+    ) == ItemId
+end
+
+
+function AutoBestEquipmentController:SendAccessoryEquip(
+    SlotName,
+    ItemId
+)
+    if not self.SignalEvent
+        or type(
+            self.SignalEvent.ToServer
+        ) ~= "function"
+    then
+        return false
+    end
+
+    local Success =
+        pcall(
+            self.SignalEvent.ToServer,
+            "AccessoryEquip",
+            SlotName,
+            ItemId,
+            "Stats"
+        )
+
+    return Success
+end
+
+
+function AutoBestEquipmentController:EquipBestGear(
+    Data,
+    Candidates
+)
+    local StatsSlots =
+        Data
+        and Data.Inventory
+        and Data.Inventory.Accessories
+        and Data.Inventory.Accessories.Stats
+
+    if not StatsSlots then
+        warn(
+            "[Combat Hub] Auto Best Equipment: Stats slots missing"
+        )
+
+        return 0
+    end
+
+    ----------------------------------------------------------
+    -- REAL GAME RULE:
+    -- ONLY ONE EQUIPPED ITEM PER InventoryCategory.
+    --
+    -- Candidates are already sorted best -> worst for the selected
+    -- Damage/Health priority, so this keeps the BEST item from each
+    -- category until up to five valid categories are filled.
+    ----------------------------------------------------------
+
+    local Desired =
+        self:BuildCompatibleDesiredSet(
+            Candidates
+        )
+
+    if #Desired <= 0 then
+        return 0
+    end
+
+    local DesiredById =
+        {}
+
+    local DesiredByName =
+        {}
+
+    local DesiredByCategory =
+        {}
+
+    for _,
+        Candidate in ipairs(
+            Desired
+        )
+    do
+        DesiredById[
+            Candidate.Id
+        ] =
+            Candidate
+
+        DesiredByName[
+            Candidate.Name
+        ] =
+            Candidate
+
+        if Candidate.InventoryCategory ~= nil then
+            DesiredByCategory[
+                tostring(
+                    Candidate.InventoryCategory
+                )
+            ] =
+                Candidate
+        end
+    end
+
+    local Current =
+        self:SnapshotStatsSlots(
+            Data,
+            StatsSlots
+        )
+
+    ----------------------------------------------------------
+    -- PHASE 1:
+    -- If a category is already equipped but not with its BEST item,
+    -- replace that category IN PLACE.
+    ----------------------------------------------------------
+
+    for _,
+        SlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        local Info =
+            Current[
+                SlotName
+            ]
+
+        if Info
+            and Info.Id ~= 0
+            and Info.Name
+        then
+            local CurrentCandidate =
+                self:FindCandidateByName(
+                    Candidates,
+                    Info.Name
+                )
+
+            local Category =
+                CurrentCandidate
+                and CurrentCandidate.InventoryCategory
+
+            local BestForCategory =
+                Category ~= nil
+                and DesiredByCategory[
+                    tostring(
+                        Category
+                    )
+                ]
+                or nil
+
+            if BestForCategory
+                and Info.Id
+                    ~= BestForCategory.Id
+            then
+                local Extra =
+                    ""
+
+                if self:GetPriority()
+                    == "Damage"
+                then
+                    local V =
+                        BestForCategory.DamageVector
+                        or {}
+
+                    Extra =
+                        " • flat="
+                        .. string.format(
+                            "%.3f",
+                            tonumber(
+                                V.FlatAdditionalDamage
+                            )
+                            or 0
+                        )
+                        .. " factorBonus="
+                        .. string.format(
+                            "%.3f",
+                            tonumber(
+                                V.AdditionalDamageFactor
+                            )
+                            or 0
+                        )
+                end
+
+                HubDebug(
+                    "[Combat Hub] Auto Best Equipment ["
+                        .. tostring(
+                            self:GetPriority()
+                        )
+                        .. "]: upgrading category "
+                        .. tostring(
+                            Category
+                        )
+                        .. " • "
+                        .. tostring(
+                            Info.Name
+                        )
+                        .. " → "
+                        .. tostring(
+                            BestForCategory.Name
+                        )
+                        .. Extra
+                )
+
+                local Applied =
+                    self:TryEquipAndDetectConflict(
+                        Data,
+                        StatsSlots,
+                        SlotName,
+                        BestForCategory,
+                        Candidates
+                    )
+
+                return Applied
+                    and 1
+                    or 0
+            end
+        end
+    end
+
+    ----------------------------------------------------------
+    -- WHICH DESIRED CATEGORIES ARE ALREADY EQUIPPED?
+    ----------------------------------------------------------
+
+    local EquippedCategories =
+        {}
+
+    for _,
+        SlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        local Info =
+            Current[
+                SlotName
+            ]
+
+        if Info
+            and Info.Id ~= 0
+            and Info.Name
+        then
+            local CurrentCandidate =
+                self:FindCandidateByName(
+                    Candidates,
+                    Info.Name
+                )
+
+            local Category =
+                CurrentCandidate
+                and CurrentCandidate.InventoryCategory
+
+            if Category ~= nil then
+                EquippedCategories[
+                    tostring(
+                        Category
+                    )
+                ] =
+                    true
+            end
+        end
+    end
+
+    local Missing =
+        {}
+
+    for _,
+        Candidate in ipairs(
+            Desired
+        )
+    do
+        local CategoryKey =
+            Candidate.InventoryCategory ~= nil
+            and tostring(
+                Candidate.InventoryCategory
+            )
+            or (
+                "__ITEM__"
+                .. tostring(
+                    Candidate.Name
+                )
+            )
+
+        if not EquippedCategories[
+            CategoryKey
+        ]
+        then
+            table.insert(
+                Missing,
+                Candidate
+            )
+        end
+    end
+
+    if #Missing <= 0 then
+        return 0
+    end
+
+    ----------------------------------------------------------
+    -- PHASE 2:
+    -- FILL EMPTY SLOT WITH BEST MISSING CATEGORY.
+    ----------------------------------------------------------
+
+    for _,
+        SlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        local Info =
+            Current[
+                SlotName
+            ]
+
+        if Info
+            and Info.Id == 0
+        then
+            local Candidate =
+                Missing[
+                    1
+                ]
+
+            if not Candidate then
+                return 0
+            end
+
+            HubDebug(
+                "[Combat Hub] Auto Best Equipment: filling empty "
+                    .. tostring(
+                        SlotName
+                    )
+                    .. " → "
+                    .. tostring(
+                        Candidate.Name
+                    )
+                    .. " ["
+                    .. tostring(
+                        Candidate.InventoryCategory
+                        or "Unknown"
+                    )
+                    .. "]"
+            )
+
+            local Applied =
+                self:TryEquipAndDetectConflict(
+                    Data,
+                    StatsSlots,
+                    SlotName,
+                    Candidate,
+                    Candidates
+                )
+
+            return Applied
+                and 1
+                or 0
+        end
+    end
+
+    ----------------------------------------------------------
+    -- PHASE 3:
+    -- ALL SLOTS FULL.
+    -- Replace a category/item that is NOT in the desired valid set.
+    ----------------------------------------------------------
+
+    for _,
+        SlotName in ipairs(
+            self.SlotNames
+        )
+    do
+        local Info =
+            Current[
+                SlotName
+            ]
+
+        if Info
+            and Info.Id ~= 0
+            and Info.Name
+        then
+            local CurrentCandidate =
+                self:FindCandidateByName(
+                    Candidates,
+                    Info.Name
+                )
+
+            local CurrentCategoryKey =
+                CurrentCandidate
+                and CurrentCandidate.InventoryCategory ~= nil
+                and tostring(
+                    CurrentCandidate.InventoryCategory
+                )
+                or (
+                    "__ITEM__"
+                    .. tostring(
+                        Info.Name
+                    )
+                )
+
+            local DesiredForCategory =
+                DesiredByCategory[
+                    CurrentCategoryKey
+                ]
+
+            local ShouldReplace =
+                not DesiredForCategory
+                or DesiredForCategory.Id
+                    ~= Info.Id
+
+            if ShouldReplace then
+                local Candidate =
+                    Missing[
+                        1
+                    ]
+
+                if not Candidate then
+                    return 0
+                end
+
+                HubDebug(
+                    "[Combat Hub] Auto Best Equipment: replacing "
+                        .. tostring(
+                            Info.Name
+                        )
+                        .. " ["
+                        .. tostring(
+                            CurrentCategoryKey
+                        )
+                        .. "] → "
+                        .. tostring(
+                            Candidate.Name
+                        )
+                        .. " ["
+                        .. tostring(
+                            Candidate.InventoryCategory
+                            or "Unknown"
+                        )
+                        .. "]"
+                )
+
+                local Applied =
+                    self:TryEquipAndDetectConflict(
+                        Data,
+                        StatsSlots,
+                        SlotName,
+                        Candidate,
+                        Candidates
+                    )
+
+                return Applied
+                    and 1
+                    or 0
+            end
+        end
+    end
+
+    return 0
+end
+
+function AutoBestEquipmentController:Step()
+    if not HubRunning
+        or not Settings.AutoEquipBestEquipment
+    then
+        return
+    end
+
+    if not self:LoadModules() then
+        return
+    end
+
+    if self:IsLoadoutChangeDenied() then
+        if os.clock()
+            - self.LastDeniedLog
+            >= 5
+        then
+            self.LastDeniedLog =
+                os.clock()
+
+            HubDebug(
+                "[Combat Hub] Auto Best Equipment: loadout changes currently denied • waiting"
+            )
+        end
+
+        return
+    end
+
+    local Data,
+        Gear =
+        self:GetGearCandidates()
+
+    if not Data then
+        if os.clock()
+            - self.LastDeniedLog
+            >= 5
+        then
+            self.LastDeniedLog =
+                os.clock()
+
+            warn(
+                "[Combat Hub] Auto Best Equipment: inventory data tree not ready"
+            )
+        end
+
+        return
+    end
+
+    if #Gear <= 0 then
+        if os.clock()
+            - self.LastDeniedLog
+            >= 5
+        then
+            self.LastDeniedLog =
+                os.clock()
+
+            local Inventory =
+                Data.Inventory
+                and Data.Inventory.Inventory
+
+            warn(
+                "[Combat Hub] Auto Best Equipment: no Stats gear candidates • inventory="
+                    .. tostring(
+                        Inventory
+                        and #Inventory:GetChildren()
+                        or 0
+                    )
+                    .. " • priority="
+                    .. tostring(
+                        self:GetPriority()
+                    )
+            )
+        end
+
+        return
+    end
+
+    local Changed =
+        self:EquipBestGear(
+            Data,
+            Gear
+        )
+
+    local Priority =
+        self:GetPriority()
+
+    local Names =
+        {}
+
+    local CompatibleGear =
+        self:BuildCompatibleDesiredSet(
+            Gear
+        )
+
+    for Index = 1,
+        math.min(
+            5,
+            #CompatibleGear
+        )
+    do
+        table.insert(
+            Names,
+            CompatibleGear[
+                Index
+            ].Name
+        )
+    end
+
+    local Summary =
+        Priority
+        .. "|"
+        .. table.concat(
+            Names,
+            ","
+        )
+
+    if Summary
+        ~= self.LastSummary
+    then
+        self.LastSummary =
+            Summary
+
+        HubDebug(
+            "[Combat Hub] Auto Best Equipment ["
+                .. tostring(
+                    Priority
+                )
+                .. "] best gear • one per category: "
+                .. (
+                    #Names > 0
+                    and table.concat(
+                        Names,
+                        ", "
+                    )
+                    or "none"
+                )
+        )
+    end
+
+    if Changed > 0 then
+        task.wait(
+            0.20
+        )
+    end
+end
+
+
+function AutoBestEquipmentController:Start()
+    if self.Running then
+        Settings.AutoEquipBestEquipment =
+            true
+
+        task.defer(function()
+            self:Step()
+        end)
+
+        return
+    end
+
+    Settings.AutoEquipBestEquipment =
+        true
+
+    table.clear(
+        self.ConflictPairs
+    )
+
+    self.Running =
+        true
+
+    self.LoopID +=
+        1
+
+    self.LastSummary =
+        ""
+
+    self.LastDeniedLog =
+        0
+
+    local MyLoopID =
+        self.LoopID
+
+    task.spawn(function()
+        task.wait(
+            0.10
+        )
+
+        while HubRunning
+            and Settings.AutoEquipBestEquipment
+            and self.Running
+            and MyLoopID
+                == self.LoopID
+        do
+            self:Step()
+
+            task.wait(
+                self.ScanDelay
+            )
+        end
+    end)
+end
+
+
+function AutoBestEquipmentController:Stop()
+    Settings.AutoEquipBestEquipment =
+        false
+
+    self.Running =
+        false
+
+    self.LoopID +=
+        1
+end
+
+
 local function ReleaseBlockingForCombat()
     if not Settings.AutoBlock then
         return true
@@ -1412,7 +4421,7 @@ task.spawn(function()
             LastSignature =
                 Signature
 
-            print(
+            HubDebug(
                 "[Combat Hub] Combat: "
                     .. Signature
             )
@@ -1445,6 +4454,7 @@ local function OpenChestPrompt(Prompt)
     if not HubRunning
         or not Settings.AutoOpenChest
         or Settings.__RewardRoomBusy
+        or LocalPlayer:GetAttribute("InShops") == true
         or not IsChestPrompt(Prompt)
         or not Prompt.Enabled
     then
@@ -1787,6 +4797,263 @@ end
 local function IsCollectiblePrompt(Object)
     return IsLootPrompt(Object)
         or IsSoulPrompt(Object)
+end
+
+
+local function ResolveAggroNpcModel(
+    Object
+)
+    if not Object
+        or not Object.Parent
+    then
+        return nil
+    end
+
+    local Candidate =
+        Object
+
+    if Candidate:IsA(
+        "Humanoid"
+    ) then
+        Candidate =
+            Candidate.Parent
+    elseif Candidate:IsA(
+        "BasePart"
+    ) then
+        Candidate =
+            Candidate:FindFirstAncestorOfClass(
+                "Model"
+            )
+    end
+
+    if Candidate
+        and Candidate:IsA(
+            "Model"
+        )
+    then
+        local Humanoid =
+            Candidate:FindFirstChildWhichIsA(
+                "Humanoid",
+                true
+            )
+
+        if Humanoid
+            and Humanoid.Health > 0
+            and Candidate
+                ~= LocalPlayer.Character
+            and not Players:GetPlayerFromCharacter(
+                Candidate
+            )
+        then
+            return Candidate
+        end
+    end
+
+    -- ObjectValues can occasionally point at an outer NPC folder/model.
+    -- Find the living inner model if needed.
+    for _,
+        Descendant in ipairs(
+            Object:GetDescendants()
+        )
+    do
+        if Descendant:IsA(
+            "Model"
+        )
+        then
+            local Humanoid =
+                Descendant:FindFirstChildWhichIsA(
+                    "Humanoid",
+                    true
+                )
+
+            if Humanoid
+                and Humanoid.Health > 0
+                and not Players:GetPlayerFromCharacter(
+                    Descendant
+                )
+            then
+                return Descendant
+            end
+        end
+    end
+
+    return nil
+end
+
+
+local function GetAggroNpcRoot(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return nil
+    end
+
+    return Model:FindFirstChild(
+        "HumanoidRootPart",
+        true
+    )
+        or Model.PrimaryPart
+        or Model:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
+end
+
+
+local function FindAggroedEnemyTarget()
+    local Character =
+        LocalPlayer.Character
+
+    local Root =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    if not Character
+        or not Root
+    then
+        return nil
+    end
+
+    local Best =
+        nil
+
+    local BestDistance =
+        math.huge
+
+    local Seen =
+        {}
+
+    local function Consider(
+        Object
+    )
+        local Model =
+            ResolveAggroNpcModel(
+                Object
+            )
+
+        if not Model
+            or Seen[
+                Model
+            ]
+        then
+            return
+        end
+
+        Seen[
+            Model
+        ] =
+            true
+
+        local Humanoid =
+            Model:FindFirstChildWhichIsA(
+                "Humanoid",
+                true
+            )
+
+        local NpcRoot =
+            GetAggroNpcRoot(
+                Model
+            )
+
+        if not Humanoid
+            or Humanoid.Health <= 0
+            or not NpcRoot
+        then
+            return
+        end
+
+        local Distance =
+            (
+                NpcRoot.Position
+                - Root.Position
+            ).Magnitude
+
+        if Distance
+            < BestDistance
+        then
+            BestDistance =
+                Distance
+
+            Best =
+                Model
+        end
+    end
+
+    ----------------------------------------------------------
+    -- BEST SIGNAL:
+    -- Character.NpcsFollowing contains NPC ObjectValues that are actively
+    -- following/targeting this player.
+    ----------------------------------------------------------
+
+    local Following =
+        Character:FindFirstChild(
+            "NpcsFollowing"
+        )
+
+    if Following then
+        for _,
+            ValueObject in ipairs(
+                Following:GetChildren()
+            )
+        do
+            if ValueObject:IsA(
+                "ObjectValue"
+            )
+                and ValueObject.Value
+            then
+                Consider(
+                    ValueObject.Value
+                )
+            end
+        end
+    end
+
+    if Best then
+        return Best
+    end
+
+    ----------------------------------------------------------
+    -- FALLBACK:
+    -- Some NPC implementations expose Aggroed=true directly.
+    -- Only run this wider scan when NpcsFollowing gave us nothing.
+    ----------------------------------------------------------
+
+    local Humanoids =
+        workspace:FindFirstChild(
+            "Humanoids"
+        )
+
+    local Regions =
+        Humanoids
+        and Humanoids:FindFirstChild(
+            "Regions"
+        )
+
+    if Regions then
+        for _,
+            Object in ipairs(
+                Regions:GetDescendants()
+            )
+        do
+            if Object:IsA(
+                "Model"
+            )
+                and Object:GetAttribute(
+                    "Aggroed"
+                ) == true
+            then
+                Consider(
+                    Object
+                )
+            end
+        end
+    end
+
+    return Best
 end
 
 
@@ -2333,6 +5600,24 @@ local function PickUpCollectiblePrompt(
         return false
     end
 
+    -- Normal world loot must wait until every currently-aggroed NPC is
+    -- dealt with. Forced reward-room collection bypasses this because those
+    -- systems intentionally own the entire post-run sequence.
+    if not Force then
+        local AggroTarget =
+            FindAggroedEnemyTarget()
+
+        if AggroTarget then
+            Settings.__LootAggroCleanup =
+                true
+
+            Settings.__LootFarmBusy =
+                false
+
+            return false
+        end
+    end
+
     local IsSoul =
         IsSoulPrompt(
             Prompt
@@ -2469,6 +5754,33 @@ local function ScanExistingLoot(
         then
             FilterRadius =
                 Settings.__RaidLootRadius
+        end
+    end
+
+    -- World-boss post-kill collection uses the same normal collector but
+    -- constrains it to the boss/chest area so an unrelated old drop cannot
+    -- pull us away before the next boss.
+    if Settings.__BossRewardCollecting then
+        if typeof(
+            FilterCenter
+        ) ~= "Vector3"
+            and typeof(
+                Settings.__BossLootCenter
+            ) == "Vector3"
+        then
+            FilterCenter =
+                Settings.__BossLootCenter
+        end
+
+        if not tonumber(
+            FilterRadius
+        )
+            and tonumber(
+                Settings.__BossLootRadius
+            )
+        then
+            FilterRadius =
+                Settings.__BossLootRadius
         end
     end
 
@@ -2637,8 +5949,33 @@ local function ScanExistingLoot(
         end
     end
 
-    -- Hold quest/general farm movement until every eligible loot/soul
-    -- has been collected.
+    ----------------------------------------------------------
+    -- COMBAT BEFORE COLLECTION
+    ----------------------------------------------------------
+
+    if BestPrompt then
+        local AggroTarget =
+            FindAggroedEnemyTarget()
+
+        if AggroTarget then
+            -- IMPORTANT:
+            -- Do NOT steal movement for loot. Let QuestFarmController move
+            -- onto this attacker and finish it first.
+            Settings.__LootAggroCleanup =
+                true
+
+            Settings.__LootFarmBusy =
+                false
+
+            return
+        end
+    end
+
+    Settings.__LootAggroCleanup =
+        false
+
+    -- Hold quest/general farm movement only once it is actually safe to
+    -- leave combat and collect.
     Settings.__LootFarmBusy =
         BestPrompt ~= nil
 
@@ -2647,6 +5984,151 @@ local function ScanExistingLoot(
             BestPrompt
         )
     end
+end
+
+
+local function CountEligibleCollectiblesNear(
+    Center,
+    Radius
+)
+    if typeof(
+        Center
+    ) ~= "Vector3"
+    then
+        return 0
+    end
+
+    Radius =
+        tonumber(
+            Radius
+        )
+        or 55
+
+    local Count =
+        0
+
+    local Seen =
+        {}
+
+    local function Consider(
+        Prompt
+    )
+        if not Prompt
+            or Seen[
+                Prompt
+            ]
+            or not Prompt.Parent
+            or not Prompt:IsA(
+                "ProximityPrompt"
+            )
+            or not IsCollectiblePrompt(
+                Prompt
+            )
+        then
+            return
+        end
+
+        Seen[
+            Prompt
+        ] =
+            true
+
+        local Soul =
+            IsSoulPrompt(
+                Prompt
+            )
+
+        if not Soul
+            and not Prompt.Enabled
+        then
+            return
+        end
+
+        if IsLootPrompt(
+            Prompt
+        )
+        then
+            local Drop =
+                GetLootDropFromPrompt(
+                    Prompt
+                )
+
+            if not Drop
+                or not LootMatchesSelection(
+                    Drop
+                )
+            then
+                return
+            end
+        end
+
+        local PromptCFrame =
+            LootMoveState:GetPromptCFrame(
+                Prompt
+            )
+
+        if not PromptCFrame
+            or (
+                PromptCFrame.Position
+                - Center
+            ).Magnitude
+                > Radius
+        then
+            return
+        end
+
+        Count +=
+            1
+    end
+
+    local LootFolder =
+        GetLootFolder()
+
+    if LootFolder then
+        for _,
+            Object in ipairs(
+                LootFolder:GetDescendants()
+            )
+        do
+            if IsLootPrompt(
+                Object
+            )
+            then
+                Consider(
+                    Object
+                )
+            end
+        end
+    end
+
+    local Debree =
+        GetDebreeFolder()
+
+    if Debree then
+        for _,
+            Drop in ipairs(
+                Debree:GetChildren()
+            )
+        do
+            if Drop.Name == "Weak Soul"
+                or Drop.Name == "Strong Soul"
+            then
+                local Prompt =
+                    Drop:FindFirstChild(
+                        "SoulPrompt",
+                        true
+                    )
+
+                if Prompt then
+                    Consider(
+                        Prompt
+                    )
+                end
+            end
+        end
+    end
+
+    return Count
 end
 
 
@@ -2694,6 +6176,9 @@ local function StopAutoPickUpLoot()
         false
 
     Settings.__LootFarmBusy =
+        false
+
+    Settings.__LootAggroCleanup =
         false
 
     AutoLootLoopID += 1
@@ -2749,9 +6234,6 @@ LootAddedConnection =
             if not Relevant then
                 return
             end
-
-            Settings.__LootFarmBusy =
-                true
 
             task.delay(
                 0.04,
@@ -4147,7 +7629,7 @@ function QuestController:SetStatus(
         )
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Quest: "
             .. tostring(
                 Status
@@ -5661,7 +9143,7 @@ function QuestController:TeleportToQuestNPC(
                 .. "Visit that NPC once while the hub is running so its position can be learned."
         end
 
-        print(
+        HubDebug(
             "[Combat Hub] Auto Quest: loading "
                 .. tostring(
                     Config.RegionName
@@ -6286,6 +9768,30 @@ local FarmMobOptions = {
 }
 
 
+local FarmBossNames =
+    {}
+
+for _,
+    Name in ipairs(
+        FarmMobOptions
+    )
+do
+    local Config =
+        FarmMobConfigs[
+            Name
+        ]
+
+    if Config
+        and Config.IsBoss == true
+    then
+        table.insert(
+            FarmBossNames,
+            Name
+        )
+    end
+end
+
+
 local function IsFarmMobDivider(
     Value
 )
@@ -6355,7 +9861,591 @@ local QuestFarmController = {
     -- bosses. Never chase a Temporary NPC across the world just because
     -- its model happened to be streamed.
     DungeonMaxTargetDistance = 650,
+
+    -- Last normal world-farm target. This lets us detect the moment a boss
+    -- dies BEFORE multi-boss mode selects/travels to the next boss.
+    LastCombatTarget = nil,
+    LastCombatTargetName = nil,
+    LastCombatTargetWasBoss = false,
+    LastCombatTargetPosition = nil,
+    LastCombatTargetHealth = nil,
+
+    -- World boss post-kill reward sequence.
+    PostBossRewardBusy = false,
+    BossChestSpawnWait = 5.5,
+    BossChestSearchRadius = 70,
+    BossChestOpenTimeout = 6,
+    BossLootRadius = 60,
+    BossLootSpawnGrace = 2.75,
+    BossLootQuietConfirm = 1.50,
+    BossLootHardTimeout = 20,
+    AggroCleanupTimeout = 20,
 }
+
+
+function QuestFarmController:BuildFarmSpec(
+    Name,
+    Source
+)
+    local Config =
+        FarmMobConfigs[
+            Name
+        ]
+
+    if not Config then
+        return nil
+    end
+
+    return {
+        EnemyName =
+            Config.EnemyName,
+
+        RegionName =
+            Config.RegionName,
+
+        SearchAllRegions =
+            Config.SearchAllRegions == true,
+
+        IsBoss =
+            Config.IsBoss == true,
+
+        NpcCode =
+            Config.NpcCode,
+
+        Category =
+            Config.Category,
+
+        SelectionName =
+            Name,
+
+        Source =
+            Source
+            or "Auto Farm",
+    }
+end
+
+
+function QuestFarmController:GetSelectedFarmSpecs()
+    local Specs =
+        {}
+
+    local Seen =
+        {}
+
+    local Selected =
+        Settings.SelectedFarmMobs
+
+    if type(
+        Selected
+    ) ~= "table"
+    then
+        Selected = {
+            Settings.SelectedFarmMob,
+        }
+    end
+
+    for _,
+        Name in ipairs(
+            Selected
+        )
+    do
+        if type(
+            Name
+        ) == "string"
+            and not Seen[
+                Name
+            ]
+            and FarmMobConfigs[
+                Name
+            ]
+        then
+            local Spec =
+                self:BuildFarmSpec(
+                    Name,
+                    "Auto Farm"
+                )
+
+            if Spec then
+                Seen[
+                    Name
+                ] =
+                    true
+
+                table.insert(
+                    Specs,
+                    Spec
+                )
+            end
+        end
+    end
+
+    return Specs
+end
+
+
+function QuestFarmController:GetAllBossFarmSpecs()
+    local Specs =
+        {}
+
+    for _,
+        Name in ipairs(
+            FarmBossNames
+        )
+    do
+        local Spec =
+            self:BuildFarmSpec(
+                Name,
+                "Auto Farm Boss"
+            )
+
+        if Spec then
+            table.insert(
+                Specs,
+                Spec
+            )
+        end
+    end
+
+    return Specs
+end
+
+
+function QuestFarmController:BuildMultiFarmSpec(
+    Specs,
+    Source
+)
+    if type(
+        Specs
+    ) ~= "table"
+        or #Specs <= 0
+    then
+        return nil
+    end
+
+    if #Specs == 1 then
+        return Specs[
+            1
+        ]
+    end
+
+    local EnemyNameSet =
+        {}
+
+    local BossSpecs =
+        {}
+
+    for _,
+        Spec in ipairs(
+            Specs
+        )
+    do
+        EnemyNameSet[
+            Spec.EnemyName
+        ] =
+            true
+
+        if Spec.IsBoss then
+            table.insert(
+                BossSpecs,
+                Spec
+            )
+        end
+    end
+
+    return {
+        EnemyName =
+            "__MULTI_FARM__",
+
+        MultiFarm =
+            true,
+
+        Specs =
+            Specs,
+
+        BossSpecs =
+            BossSpecs,
+
+        EnemyNameSet =
+            EnemyNameSet,
+
+        SearchAllRegions =
+            true,
+
+        Source =
+            Source
+            or "Auto Farm",
+    }
+end
+
+
+function QuestFarmController:GetGeneralFarmSpec()
+    if Settings.AutoFarmBoss then
+        return self:BuildMultiFarmSpec(
+            self:GetAllBossFarmSpecs(),
+            "Auto Farm Boss"
+        )
+    end
+
+    if Settings.AutoFarm then
+        return self:BuildMultiFarmSpec(
+            self:GetSelectedFarmSpecs(),
+            "Auto Farm"
+        )
+    end
+
+    return nil
+end
+
+
+function QuestFarmController:ObjectMatchesMultiFarm(
+    Object,
+    Spec
+)
+    if not Object
+        or not Spec
+        or not Spec.MultiFarm
+    then
+        return false
+    end
+
+    local Set =
+        Spec.EnemyNameSet
+        or {}
+
+    if Set[
+        Object.Name
+    ]
+    then
+        return true
+    end
+
+    local Parent =
+        Object.Parent
+
+    return Parent ~= nil
+        and Set[
+            Parent.Name
+        ] == true
+end
+
+
+function QuestFarmController:TargetMatchesFarmSpec(
+    Target,
+    Spec
+)
+    if not Target
+        or not Spec
+    then
+        return false
+    end
+
+    if Spec.DungeonMode then
+        return true
+    end
+
+    if Spec.MultiFarm then
+        if Spec.EnemyNameSet
+            and Spec.EnemyNameSet[
+                Target.Name
+            ]
+        then
+            return true
+        end
+
+        for _,
+            BossSpec in ipairs(
+                Spec.BossSpecs
+                or {}
+            )
+        do
+            local Container =
+                self:GetBossContainer(
+                    BossSpec
+                )
+
+            if Container
+                and Target:IsDescendantOf(
+                    Container
+                )
+            then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    if Target.Name
+        == Spec.EnemyName
+    then
+        return true
+    end
+
+    if Spec.IsBoss then
+        local Container =
+            self:GetBossContainer(
+                Spec
+            )
+
+        return Container ~= nil
+            and Target:IsDescendantOf(
+                Container
+            )
+    end
+
+    return false
+end
+
+
+function QuestFarmController:FindMultiFarmTarget(
+    Spec
+)
+    if not Spec
+        or not Spec.MultiFarm
+    then
+        return nil
+    end
+
+    local Character =
+        LocalPlayer.Character
+
+    local Root =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    local RootPosition =
+        Root
+        and Root.Position
+        or Vector3.zero
+
+    local BestTarget =
+        nil
+
+    local BestDistance =
+        math.huge
+
+    local Seen =
+        {}
+
+    local function Consider(
+        Target
+    )
+        if not Target
+            or Seen[
+                Target
+            ]
+            or not Target.Parent
+            or not (
+                Target:IsA(
+                    "Model"
+                )
+                or Target:IsA(
+                    "BasePart"
+                )
+            )
+            or not self:IsInsideActiveNpcs(
+                Target
+            )
+            or not self:IsAlive(
+                Target
+            )
+        then
+            return
+        end
+
+        local TargetRoot =
+            self:GetStableTargetRoot(
+                Target
+            )
+
+        if not TargetRoot
+            or not TargetRoot.Parent
+        then
+            return
+        end
+
+        Seen[
+            Target
+        ] =
+            true
+
+        local Distance =
+            (
+                TargetRoot.Position
+                - RootPosition
+            ).Magnitude
+
+        if Distance
+            < BestDistance
+        then
+            BestDistance =
+                Distance
+
+            BestTarget =
+                Target
+        end
+    end
+
+    -- Boss-specific lookup handles BossInfo/world-boss layouts.
+    for _,
+        BossSpec in ipairs(
+            Spec.BossSpecs
+            or {}
+        )
+    do
+        Consider(
+            self:FindBossTarget(
+                BossSpec
+            )
+        )
+    end
+
+    -- Also inspect normal ActiveNpcs naming across all regions.
+    local Humanoids =
+        workspace:FindFirstChild(
+            "Humanoids"
+        )
+
+    local Regions =
+        Humanoids
+        and Humanoids:FindFirstChild(
+            "Regions"
+        )
+
+    if Regions then
+        local Wanted =
+            Spec.EnemyNameSet
+            or {}
+
+        for _,
+            Object in ipairs(
+                Regions:GetDescendants()
+            )
+        do
+            if Wanted[
+                Object.Name
+            ]
+            then
+                Consider(
+                    Object
+                )
+            end
+        end
+    end
+
+    return BestTarget
+end
+
+
+function QuestFarmController:GetBestMissingBossSpec(
+    Spec
+)
+    if not Spec
+        or not Spec.MultiFarm
+    then
+        return nil
+    end
+
+    local Character =
+        LocalPlayer.Character
+
+    local Root =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    local RootPosition =
+        Root
+        and Root.Position
+        or Vector3.zero
+
+    local BestSpec =
+        nil
+
+    local BestTier =
+        math.huge
+
+    local BestPrimary =
+        math.huge
+
+    local BestDistance =
+        math.huge
+
+    for _,
+        BossSpec in ipairs(
+            Spec.BossSpecs
+            or {}
+        )
+    do
+        if not self:FindBossTarget(
+            BossSpec
+        )
+        then
+            local Center =
+                self:GetBossCenter(
+                    BossSpec
+                )
+
+            if typeof(
+                Center
+            ) == "Vector3"
+            then
+                local Remaining =
+                    self:GetBossRespawnRemaining(
+                        BossSpec
+                    )
+
+                local Tier =
+                    Remaining
+                    and Remaining > 0
+                    and 1
+                    or 0
+
+                local Primary =
+                    Tier == 1
+                    and Remaining
+                    or 0
+
+                local Distance =
+                    (
+                        RootPosition
+                        - Center
+                    ).Magnitude
+
+                if Tier < BestTier
+                    or (
+                        Tier == BestTier
+                        and (
+                            Primary < BestPrimary
+                            or (
+                                Primary == BestPrimary
+                                and Distance
+                                    < BestDistance
+                            )
+                        )
+                    )
+                then
+                    BestTier =
+                        Tier
+
+                    BestPrimary =
+                        Primary
+
+                    BestDistance =
+                        Distance
+
+                    BestSpec =
+                        BossSpec
+                end
+            end
+        end
+    end
+
+    return BestSpec
+end
 
 
 function QuestFarmController:GetActiveFarmSpec()
@@ -6490,38 +10580,13 @@ function QuestFarmController:GetActiveFarmSpec()
         }
     end
 
-    -- If no quest farm currently owns movement, use the general
-    -- mob dropdown when Auto Farm is enabled.
-    if Settings.AutoFarm then
-        local MobConfig =
-            FarmMobConfigs[
-                Settings.SelectedFarmMob
-            ]
+    -- If no quest/dungeon farm currently owns movement, use either
+    -- the independent all-boss mode or the ordinary multi-selected list.
+    local GeneralSpec =
+        self:GetGeneralFarmSpec()
 
-        if MobConfig then
-            return {
-                EnemyName = MobConfig.EnemyName,
-
-                -- Known permanent mobs stay locked to their normal region.
-                -- Event-like Hoyuzo / Kaiden mobs can be discovered under
-                -- any workspace.Humanoids.Regions.<Region>.ActiveNpcs.
-                RegionName =
-                    MobConfig.RegionName,
-
-                SearchAllRegions =
-                    MobConfig.SearchAllRegions
-                    == true,
-
-                IsBoss =
-                    MobConfig.IsBoss
-                    == true,
-
-                NpcCode =
-                    MobConfig.NpcCode,
-
-                Source = "Auto Farm",
-            }
-        end
+    if GeneralSpec then
+        return GeneralSpec
     end
 
     return nil
@@ -7050,7 +11115,10 @@ function QuestFarmController:HandleMissingBoss(
 )
     if not Spec
         or not Spec.IsBoss
-        or not Settings.AutoFarm
+        or not (
+            Settings.AutoFarm
+            or Settings.AutoFarmBoss
+        )
     then
         return false
     end
@@ -7149,7 +11217,7 @@ function QuestFarmController:HandleMissingBoss(
             Center
         )
 
-        print(
+        HubDebug(
             "[Combat Hub] Boss preload: "
                 .. tostring(
                     Spec.EnemyName
@@ -7180,7 +11248,7 @@ function QuestFarmController:HandleMissingBoss(
                     Remaining
                 )
 
-            print(
+            HubDebug(
                 "[Combat Hub] "
                     .. tostring(
                         Spec.EnemyName
@@ -7198,7 +11266,7 @@ function QuestFarmController:HandleMissingBoss(
                     .. "s"
             )
         else
-            print(
+            HubDebug(
                 "[Combat Hub] Waiting for "
                     .. tostring(
                         Spec.EnemyName
@@ -7333,6 +11401,7 @@ function QuestFarmController:EnsureSpawnWatcher()
                         Settings.AutoFarmQuest
                         or Settings.AutoFarmDungeon
                         or Settings.AutoFarm
+                        or Settings.AutoFarmBoss
                     )
                 then
                     return
@@ -7392,6 +11461,13 @@ function QuestFarmController:EnsureSpawnWatcher()
                                 )
                                 or Object.Name
                                     == "HumanoidRootPart"
+                            )
+                        )
+                        or (
+                            Spec.MultiFarm
+                            and self:ObjectMatchesMultiFarm(
+                                Object,
+                                Spec
                             )
                         )
                         or Object.Name
@@ -7964,7 +12040,7 @@ function QuestFarmController:SetDungeonPending(
         self.DungeonLastStatusAt =
             0
 
-        print(
+        HubDebug(
             "[Combat Hub] Dungeon room loading: "
                 .. Signature
                 .. " | waiting for live Humanoids/models"
@@ -7976,7 +12052,7 @@ function QuestFarmController:SetDungeonPending(
         self.DungeonLastStatusAt =
             Now
 
-        print(
+        HubDebug(
             "[Combat Hub] Dungeon still loading NPC models: "
                 .. Signature
                 .. " | "
@@ -8216,7 +12292,7 @@ function QuestFarmController:FindDungeonTarget()
             self.LastDungeonGroupName =
                 BestGroup
 
-            print(
+            HubDebug(
                 "[Combat Hub] Dungeon group: "
                     .. tostring(
                         BestGroup
@@ -8290,6 +12366,14 @@ function QuestFarmController:FindTarget(
         and Spec.DungeonMode
     then
         return self:FindDungeonTarget()
+    end
+
+    if Spec
+        and Spec.MultiFarm
+    then
+        return self:FindMultiFarmTarget(
+            Spec
+        )
     end
 
     if Spec
@@ -8440,18 +12524,10 @@ function QuestFarmController:GetCurrentTarget(
 
     local NameMatches =
         Target
-        and (
-            (
-                Spec
-                and Spec.DungeonMode
-            )
-            or Target.Name == EnemyName
-            or (
-                BossContainer
-                and Target:IsDescendantOf(
-                    BossContainer
-                )
-            )
+        and Spec
+        and self:TargetMatchesFarmSpec(
+            Target,
+            Spec
         )
 
     local TargetValid =
@@ -8500,6 +12576,927 @@ function QuestFarmController:GetCurrentTarget(
         nil
 
     return nil
+end
+
+
+function QuestFarmController:IsTargetBossForSpec(
+    Target,
+    Spec
+)
+    if not Target
+        or not Spec
+    then
+        return false
+    end
+
+    if Spec.DungeonMode then
+        return false
+    end
+
+    if Spec.IsBoss then
+        return true
+    end
+
+    if Spec.MultiFarm then
+        for _,
+            BossSpec in ipairs(
+                Spec.BossSpecs
+                or {}
+            )
+        do
+            if Target.Name
+                == BossSpec.EnemyName
+            then
+                return true
+            end
+
+            local Container =
+                self:GetBossContainer(
+                    BossSpec
+                )
+
+            if Container
+                and Target:IsDescendantOf(
+                    Container
+                )
+            then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+
+function QuestFarmController:TrackCombatTarget(
+    Target,
+    Spec
+)
+    if not Target
+        or not Target.Parent
+    then
+        return
+    end
+
+    local Root =
+        self:GetStableTargetRoot(
+            Target
+        )
+
+    local Humanoid =
+        Target:FindFirstChildWhichIsA(
+            "Humanoid",
+            true
+        )
+
+    self.LastCombatTarget =
+        Target
+
+    self.LastCombatTargetName =
+        Target.Name
+
+    self.LastCombatTargetWasBoss =
+        self:IsTargetBossForSpec(
+            Target,
+            Spec
+        )
+
+    if Root then
+        self.LastCombatTargetPosition =
+            Root.Position
+    end
+
+    if Humanoid then
+        self.LastCombatTargetHealth =
+            Humanoid.Health
+    end
+end
+
+
+function QuestFarmController:ClearTrackedCombatTarget()
+    self.LastCombatTarget =
+        nil
+
+    self.LastCombatTargetName =
+        nil
+
+    self.LastCombatTargetWasBoss =
+        false
+
+    self.LastCombatTargetPosition =
+        nil
+
+    self.LastCombatTargetHealth =
+        nil
+end
+
+
+function QuestFarmController:GetGenericChestPrompt(
+    Chest
+)
+    if not Chest
+        or not Chest.Parent
+    then
+        return nil
+    end
+
+    local RootPart =
+        Chest:FindFirstChild(
+            "RootPart"
+        )
+        or Chest:FindFirstChild(
+            "RootPart",
+            true
+        )
+
+    local Anchor =
+        RootPart
+        and RootPart:FindFirstChild(
+            "ChestPromptAnchor"
+        )
+
+    local Prompt =
+        Anchor
+        and Anchor:FindFirstChild(
+            "ChestPrompt"
+        )
+
+    if Prompt
+        and Prompt:IsA(
+            "ProximityPrompt"
+        )
+    then
+        return Prompt
+    end
+
+    Prompt =
+        Chest:FindFirstChild(
+            "ChestPrompt",
+            true
+        )
+
+    return Prompt
+        and Prompt:IsA(
+            "ProximityPrompt"
+        )
+        and Prompt
+        or nil
+end
+
+
+function QuestFarmController:GetGenericChestCFrame(
+    Chest
+)
+    if not Chest
+        or not Chest.Parent
+    then
+        return nil
+    end
+
+    local Root =
+        Chest:FindFirstChild(
+            "RootPart"
+        )
+        or Chest.PrimaryPart
+        or Chest:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
+
+    if Root
+        and Root:IsA(
+            "BasePart"
+        )
+    then
+        return Root.CFrame
+    end
+
+    if Chest:IsA(
+        "Model"
+    )
+    then
+        return Chest:GetPivot()
+    end
+
+    return nil
+end
+
+
+function QuestFarmController:IsChestOpened(
+    Chest,
+    Prompt
+)
+    if not Chest
+        or not Chest.Parent
+    then
+        return true
+    end
+
+    -- ChestController applies IsOpen when it has an Opened ChestState.
+    if Chest:GetAttribute(
+        "IsOpen"
+    ) == true
+    then
+        return true
+    end
+
+    local State =
+        string.lower(
+            tostring(
+                Chest:GetAttribute(
+                    "ChestState"
+                )
+                or ""
+            )
+        )
+
+    if State == "opened"
+        or State == "despawned"
+    then
+        return true
+    end
+
+    if not Prompt
+        or not Prompt.Parent
+        or not Prompt.Enabled
+    then
+        return true
+    end
+
+    return false
+end
+
+
+function QuestFarmController:IsBossRewardChestCandidate(
+    Chest
+)
+    if not Chest
+        or not Chest.Parent
+    then
+        return false
+    end
+
+    local Name =
+        string.lower(
+            tostring(
+                Chest.Name
+            )
+        )
+
+    -- These have dedicated controllers and must never be mistaken for a
+    -- normal world-boss kill chest.
+    if string.find(
+        Name,
+        "sealed cache",
+        1,
+        true
+    )
+        or string.find(
+            Name,
+            "ouwigahara",
+            1,
+            true
+        )
+    then
+        return false
+    end
+
+    local Prompt =
+        self:GetGenericChestPrompt(
+            Chest
+        )
+
+    return Prompt ~= nil
+        and not self:IsChestOpened(
+            Chest,
+            Prompt
+        )
+end
+
+
+function QuestFarmController:FindNearbyBossRewardChest(
+    Center
+)
+    if typeof(
+        Center
+    ) ~= "Vector3"
+    then
+        return nil
+    end
+
+    local Chests =
+        workspace:FindFirstChild(
+            "Chests"
+        )
+
+    if not Chests then
+        return nil
+    end
+
+    local Best =
+        nil
+
+    local BestDistance =
+        math.huge
+
+    for _,
+        Chest in ipairs(
+            Chests:GetChildren()
+        )
+    do
+        if self:IsBossRewardChestCandidate(
+            Chest
+        )
+        then
+            local CFrame =
+                self:GetGenericChestCFrame(
+                    Chest
+                )
+
+            if CFrame then
+                local Distance =
+                    (
+                        CFrame.Position
+                        - Center
+                    ).Magnitude
+
+                if Distance
+                    <= self.BossChestSearchRadius
+                    and Distance
+                        < BestDistance
+                then
+                    BestDistance =
+                        Distance
+
+                    Best =
+                        Chest
+                end
+            end
+        end
+    end
+
+    return Best
+end
+
+
+function QuestFarmController:ClearAggroBeforeRewards(
+    Timeout
+)
+    Timeout =
+        tonumber(
+            Timeout
+        )
+        or self.AggroCleanupTimeout
+
+    local Deadline =
+        os.clock()
+        + Timeout
+
+    while HubRunning
+        and os.clock()
+            < Deadline
+    do
+        local Target =
+            FindAggroedEnemyTarget()
+
+        if not Target then
+            Settings.__LootAggroCleanup =
+                false
+
+            self.CurrentTarget =
+                nil
+
+            self:StopHeartbeatLock(
+                "Farm"
+            )
+
+            return true
+        end
+
+        Settings.__LootAggroCleanup =
+            true
+
+        Settings.__LootFarmBusy =
+            false
+
+        self.CurrentTarget =
+            Target
+
+        local Humanoid =
+            Target:FindFirstChildWhichIsA(
+                "Humanoid",
+                true
+            )
+
+        HubDebug(
+            "[Combat Hub] Loot safety: finishing aggroed "
+                .. tostring(
+                    Target.Name
+                )
+                .. " before rewards"
+        )
+
+        self:HoverOverTarget(
+            Target,
+            "Farm"
+        )
+
+        while HubRunning
+            and os.clock()
+                < Deadline
+            and Target.Parent
+            and (
+                not Humanoid
+                or Humanoid.Health > 0
+            )
+        do
+            task.wait(
+                0.05
+            )
+        end
+
+        self.CurrentTarget =
+            nil
+
+        self:StopHeartbeatLock(
+            "Farm"
+        )
+
+        task.wait(
+            0.05
+        )
+    end
+
+    Settings.__LootAggroCleanup =
+        false
+
+    self.CurrentTarget =
+        nil
+
+    self:StopHeartbeatLock(
+        "Farm"
+    )
+
+    warn(
+        "[Combat Hub] Loot safety: aggro cleanup timed out"
+    )
+
+    return false
+end
+
+
+function QuestFarmController:OpenBossRewardChest(
+    Chest
+)
+    if not Settings.AutoOpenChest
+        or not Chest
+        or not Chest.Parent
+    then
+        return false
+    end
+
+    local Prompt =
+        self:GetGenericChestPrompt(
+            Chest
+        )
+
+    if not Prompt then
+        return false
+    end
+
+    self:StopHeartbeatLock(
+        "Farm"
+    )
+
+    Settings.__LootFarmBusy =
+        true
+
+    local Reached =
+        LootMoveState:TeleportToPrompt(
+            Prompt
+        )
+
+    if not Reached then
+        Settings.__LootFarmBusy =
+            false
+
+        return false
+    end
+
+    local Deadline =
+        os.clock()
+        + self.BossChestOpenTimeout
+
+    while HubRunning
+        and Settings.AutoOpenChest
+        and Chest.Parent
+        and os.clock()
+            < Deadline
+    do
+        if self:IsChestOpened(
+            Chest,
+            Prompt
+        )
+        then
+            Settings.__LootFarmBusy =
+                false
+
+            return true
+        end
+
+        if not Prompt.Parent then
+            Prompt =
+                self:GetGenericChestPrompt(
+                    Chest
+                )
+
+            if not Prompt then
+                Settings.__LootFarmBusy =
+                    false
+
+                return true
+            end
+        end
+
+        if Prompt.Enabled then
+            OpenChestPrompt(
+                Prompt
+            )
+        end
+
+        task.wait(
+            0.08
+        )
+    end
+
+    local Opened =
+        self:IsChestOpened(
+            Chest,
+            Prompt
+        )
+
+    Settings.__LootFarmBusy =
+        false
+
+    return Opened
+end
+
+
+function QuestFarmController:CollectBossRewardLoot(
+    Center
+)
+    if not Settings.AutoPickUpLoot
+        or typeof(
+            Center
+        ) ~= "Vector3"
+    then
+        return
+    end
+
+    Settings.__BossRewardCollecting =
+        true
+
+    Settings.__BossLootCenter =
+        Center
+
+    Settings.__BossLootRadius =
+        self.BossLootRadius
+
+    -- Wake the existing normal loot/soul worker for freshly-created drops.
+    StartAutoPickUpLoot()
+
+    local StartedAt =
+        os.clock()
+
+    local HardDeadline =
+        StartedAt
+        + self.BossLootHardTimeout
+
+    local SawLoot =
+        false
+
+    local QuietSince =
+        nil
+
+    local LastCount =
+        -1
+
+    while HubRunning
+        and Settings.AutoPickUpLoot
+        and os.clock()
+            < HardDeadline
+    do
+        local Aggro =
+            FindAggroedEnemyTarget()
+
+        if Aggro then
+            Settings.__BossRewardCollecting =
+                false
+
+            Settings.__BossLootCenter =
+                nil
+
+            Settings.__BossLootRadius =
+                nil
+
+            self:ClearAggroBeforeRewards(
+                self.AggroCleanupTimeout
+            )
+
+            Settings.__BossRewardCollecting =
+                true
+
+            Settings.__BossLootCenter =
+                Center
+
+            Settings.__BossLootRadius =
+                self.BossLootRadius
+        end
+
+        ScanExistingLoot(
+            Center,
+            self.BossLootRadius
+        )
+
+        local Pending =
+            CountEligibleCollectiblesNear(
+                Center,
+                self.BossLootRadius
+            )
+
+        local Busy =
+            LootMoveState.Busy
+            or CollectibleInteractionBusy
+            or Settings.__LootFarmBusy
+
+        if Pending ~= LastCount then
+            LastCount =
+                Pending
+
+            HubDebug(
+                "[Combat Hub] Boss reward loot remaining: "
+                    .. tostring(
+                        Pending
+                    )
+            )
+        end
+
+        if Pending > 0
+            or Busy
+        then
+            SawLoot =
+                true
+
+            QuietSince =
+                nil
+        else
+            local SinceStart =
+                os.clock()
+                - StartedAt
+
+            if not SawLoot
+                and SinceStart
+                    < self.BossLootSpawnGrace
+            then
+                QuietSince =
+                    nil
+            else
+                if not QuietSince then
+                    QuietSince =
+                        os.clock()
+                end
+
+                if os.clock()
+                    - QuietSince
+                    >= self.BossLootQuietConfirm
+                then
+                    break
+                end
+            end
+        end
+
+        task.wait(
+            LOOT_SCAN_INTERVAL
+        )
+    end
+
+    while HubRunning
+        and CollectibleInteractionBusy
+    do
+        task.wait(
+            0.03
+        )
+    end
+
+    Settings.__BossRewardCollecting =
+        false
+
+    Settings.__BossLootCenter =
+        nil
+
+    Settings.__BossLootRadius =
+        nil
+
+    Settings.__LootFarmBusy =
+        false
+end
+
+
+function QuestFarmController:HandleBossPostKillRewards(
+    BossName,
+    DeathPosition
+)
+    if self.PostBossRewardBusy
+        or typeof(
+            DeathPosition
+        ) ~= "Vector3"
+    then
+        return
+    end
+
+    if not Settings.AutoOpenChest
+        and not Settings.AutoPickUpLoot
+    then
+        return
+    end
+
+    -- Never run world-boss reward handling inside Ouwigahara reward shops.
+    if LocalPlayer:GetAttribute(
+        "InShops"
+    ) == true
+        or tostring(
+            workspace:GetAttribute(
+                "MinigameState"
+            )
+            or ""
+        ) == "Climbing"
+    then
+        return
+    end
+
+    self.PostBossRewardBusy =
+        true
+
+    Settings.__BossRewardBusy =
+        true
+
+    self.CurrentTarget =
+        nil
+
+    self:StopHeartbeatLock(
+        "Farm"
+    )
+
+    HubDebug(
+        "[Combat Hub] Boss defeated: "
+            .. tostring(
+                BossName
+            )
+            .. " • finishing combat/rewards before next boss"
+    )
+
+    ----------------------------------------------------------
+    -- 1) FINISH ANY NPC STILL TARGETING US
+    ----------------------------------------------------------
+
+    self:ClearAggroBeforeRewards(
+        self.AggroCleanupTimeout
+    )
+
+    ----------------------------------------------------------
+    -- 2) WAIT FOR / OPEN NEARBY BOSS CHEST
+    ----------------------------------------------------------
+
+    local RewardCenter =
+        DeathPosition
+
+    if Settings.AutoOpenChest then
+        local Chest =
+            nil
+
+        local Deadline =
+            os.clock()
+            + self.BossChestSpawnWait
+
+        while HubRunning
+            and Settings.AutoOpenChest
+            and os.clock()
+                < Deadline
+        do
+            local Aggro =
+                FindAggroedEnemyTarget()
+
+            if Aggro then
+                self:ClearAggroBeforeRewards(
+                    self.AggroCleanupTimeout
+                )
+            end
+
+            Chest =
+                self:FindNearbyBossRewardChest(
+                    DeathPosition
+                )
+
+            if Chest then
+                break
+            end
+
+            task.wait(
+                0.10
+            )
+        end
+
+        if Chest then
+            local ChestCFrame =
+                self:GetGenericChestCFrame(
+                    Chest
+                )
+
+            if ChestCFrame then
+                RewardCenter =
+                    ChestCFrame.Position
+            end
+
+            HubDebug(
+                "[Combat Hub] Boss reward chest found: "
+                    .. tostring(
+                        Chest.Name
+                    )
+            )
+
+            local Opened =
+                self:OpenBossRewardChest(
+                    Chest
+                )
+
+            HubDebug(
+                "[Combat Hub] Boss reward chest open confirmed: "
+                    .. tostring(
+                        Opened
+                    )
+            )
+
+            -- Chest drops can replicate just after the accepted open state.
+            task.wait(
+                0.20
+            )
+        else
+            HubDebug(
+                "[Combat Hub] No boss chest appeared near "
+                    .. tostring(
+                        BossName
+                    )
+                    .. " within "
+                    .. tostring(
+                        self.BossChestSpawnWait
+                    )
+                    .. "s"
+            )
+        end
+    end
+
+    ----------------------------------------------------------
+    -- 3) WAIT FOR AND COLLECT ALL NEARBY LOOT / SOULS
+    ----------------------------------------------------------
+
+    if Settings.AutoPickUpLoot then
+        self:CollectBossRewardLoot(
+            RewardCenter
+        )
+    end
+
+    Settings.__BossRewardCollecting =
+        false
+
+    Settings.__BossLootCenter =
+        nil
+
+    Settings.__BossLootRadius =
+        nil
+
+    Settings.__BossRewardBusy =
+        false
+
+    Settings.__LootAggroCleanup =
+        false
+
+    Settings.__LootFarmBusy =
+        false
+
+    self.PostBossRewardBusy =
+        false
+
+    self.CurrentTarget =
+        nil
+
+    self:StopHeartbeatLock(
+        "Farm"
+    )
+
+    HubDebug(
+        "[Combat Hub] Boss reward stage complete • resuming farm"
+    )
 end
 
 
@@ -8918,6 +13915,7 @@ function QuestFarmController:HeartbeatFarmStep(
     if Owner == "Farm" then
         if not (
             Settings.AutoFarm
+            or Settings.AutoFarmBoss
             or Settings.AutoFarmDungeon
             or Settings.AutoFarmQuest
         )
@@ -9211,7 +14209,7 @@ function QuestFarmController:EnsureHeartbeatLock(
         0
     )
 
-    print(
+    HubDebug(
         "[Combat Hub] Farm lock: "
             .. tostring(
                 Owner
@@ -9336,6 +14334,7 @@ function QuestFarmController:Start()
                 Settings.AutoFarmQuest
                 or Settings.AutoFarmDungeon
                 or Settings.AutoFarm
+                or Settings.AutoFarmBoss
             )
             and MyLoopID == self.LoopID
         do
@@ -9343,6 +14342,82 @@ function QuestFarmController:Start()
                 ErrorMessage =
                 pcall(function()
                     self:EnsureSpawnWatcher()
+
+                    ------------------------------------------------------
+                    -- A) NORMAL LOOT/SOUL SAFETY:
+                    -- if a drop is waiting but another NPC is still
+                    -- targeting us, finish that attacker FIRST.
+                    ------------------------------------------------------
+
+                    if Settings.__LootAggroCleanup then
+                        local AggroTarget =
+                            FindAggroedEnemyTarget()
+
+                        if AggroTarget then
+                            self.CurrentTarget =
+                                AggroTarget
+
+                            self:HoverOverTarget(
+                                AggroTarget,
+                                "Farm"
+                            )
+
+                            return
+                        end
+
+                        Settings.__LootAggroCleanup =
+                            false
+
+                        self.CurrentTarget =
+                            nil
+
+                        self:StopHeartbeatLock(
+                            "Farm"
+                        )
+                    end
+
+                    ------------------------------------------------------
+                    -- B) POST-BOSS REWARD GATE:
+                    -- detect death BEFORE FindTarget can choose the next
+                    -- boss in a multi-boss selection.
+                    ------------------------------------------------------
+
+                    if self.LastCombatTarget
+                        and not self:IsAlive(
+                            self.LastCombatTarget
+                        )
+                    then
+                        local WasBoss =
+                            self.LastCombatTargetWasBoss
+
+                        local BossName =
+                            self.LastCombatTargetName
+
+                        local DeathPosition =
+                            self.LastCombatTargetPosition
+
+                        self:ClearTrackedCombatTarget()
+
+                        self.CurrentTarget =
+                            nil
+
+                        self:StopHeartbeatLock(
+                            "Farm"
+                        )
+
+                        if WasBoss
+                            and typeof(
+                                DeathPosition
+                            ) == "Vector3"
+                        then
+                            self:HandleBossPostKillRewards(
+                                BossName,
+                                DeathPosition
+                            )
+
+                            return
+                        end
+                    end
 
                     local Spec =
                         self:GetActiveFarmSpec()
@@ -9365,6 +14440,11 @@ function QuestFarmController:Start()
                         )
 
                     if Target then
+                        self:TrackCombatTarget(
+                            Target,
+                            Spec
+                        )
+
                         self:HoverOverTarget(
                             Target,
                             "Farm"
@@ -9383,6 +14463,17 @@ function QuestFarmController:Start()
                             self:HandleMissingBoss(
                                 Spec
                             )
+                        elseif Spec.MultiFarm then
+                            local MissingBoss =
+                                self:GetBestMissingBossSpec(
+                                    Spec
+                                )
+
+                            if MissingBoss then
+                                self:HandleMissingBoss(
+                                    MissingBoss
+                                )
+                            end
                         end
                     end
                 end)
@@ -9414,6 +14505,7 @@ function QuestFarmController:RefreshRunState()
     if Settings.AutoFarmQuest
         or Settings.AutoFarmDungeon
         or Settings.AutoFarm
+        or Settings.AutoFarmBoss
     then
         self:Start()
     else
@@ -9448,6 +14540,25 @@ function QuestFarmController:Stop()
     self:StopHeartbeatLock()
     self:RestoreFarmNoclip()
     self:DisconnectSpawnWatcher()
+    self:ClearTrackedCombatTarget()
+
+    self.PostBossRewardBusy =
+        false
+
+    Settings.__BossRewardBusy =
+        false
+
+    Settings.__BossRewardCollecting =
+        false
+
+    Settings.__BossLootCenter =
+        nil
+
+    Settings.__BossLootRadius =
+        nil
+
+    Settings.__LootAggroCleanup =
+        false
 end
 
 
@@ -9830,7 +14941,7 @@ function RaidController:MarkSpawnCooldown(
         self:GetServerNow()
         + RespawnTime
 
-    print(
+    HubDebug(
         "[Combat Hub] "
             .. tostring(
                 Point.ChestId
@@ -9966,7 +15077,7 @@ function RaidController:SignalChestSpawn(
     self.NextSpawnSweepAt =
         0
 
-    print(
+    HubDebug(
         "[Combat Hub] Sealed cache spawn detected; raid watcher waking."
     )
 end
@@ -10091,7 +15202,7 @@ function RaidController:ScheduleNoChestWait()
                     )
                 )
 
-            print(
+            HubDebug(
                 "[Combat Hub] No raid cache active. Next tracked respawn ~"
                     .. tostring(
                         math.floor(
@@ -10111,7 +15222,7 @@ function RaidController:ScheduleNoChestWait()
                     .. "s."
             )
         else
-            print(
+            HubDebug(
                 "[Combat Hub] No raid cache active. Watching workspace.Chests; safety scan in "
                     .. tostring(
                         math.ceil(
@@ -10991,7 +16102,7 @@ function RaidController:AttackEnemy(
                 self.AutoClickNoticeEnemy =
                     Enemy
 
-                print(
+                HubDebug(
                     "[Combat Hub] Raid target ready: "
                         .. tostring(
                             Enemy.Name
@@ -11003,7 +16114,7 @@ function RaidController:AttackEnemy(
             if self.AutoClickNoticeEnemy
                 == Enemy
             then
-                print(
+                HubDebug(
                     "[Combat Hub] Auto Click active; attacking raid target: "
                         .. tostring(
                             Enemy.Name
@@ -11075,7 +16186,7 @@ function RaidController:ClearChestEnemies(
                     "Humanoid"
                 )
 
-            print(
+            HubDebug(
                 "[Combat Hub] Raid target: "
                     .. tostring(Enemy.Name)
                     .. (
@@ -11115,7 +16226,7 @@ function RaidController:ClearChestEnemies(
             if os.clock() - EmptySince
                 >= self.EmptyEnemyConfirmTime
             then
-                print(
+                HubDebug(
                     "[Combat Hub] Raid area clear; opening cache."
                 )
 
@@ -11467,7 +16578,7 @@ function RaidController:OpenChest(
         return false
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Raid cache cleared; waiting for Auto Open Chest."
     )
 
@@ -11705,7 +16816,7 @@ function RaidController:CollectChestLoot(
 
     self:ReleaseCharacter()
 
-    print(
+    HubDebug(
         "[Combat Hub] Raid cache opened; waiting for ALL nearby loot."
     )
 
@@ -11774,7 +16885,7 @@ function RaidController:CollectChestLoot(
             LastPendingCount =
                 PendingCount
 
-            print(
+            HubDebug(
                 "[Combat Hub] Raid loot remaining: "
                     .. tostring(
                         PendingCount
@@ -11804,7 +16915,7 @@ function RaidController:CollectChestLoot(
                     or 1.50
                 )
             then
-                print(
+                HubDebug(
                     "[Combat Hub] Raid loot complete; no prompts remain."
                 )
 
@@ -11940,7 +17051,7 @@ function RaidController:RunChest(
             MyLoopID
         )
 
-        print(
+        HubDebug(
             "[Combat Hub] Raid cache complete; searching for next cache."
         )
     end
@@ -12104,7 +17215,8 @@ local AutoSellController = {
     SellInterval = 10 * 60,
     BusyRetryDelay = 5.0,
 
-    RemoteSettleDelay = 0.25,
+    RemoteSettleDelay = 0.35,
+    RemoteReplicationTimeout = 3.0,
     MaxBatchPerItem = 999,
 
     SellerConfig = {
@@ -12470,7 +17582,7 @@ function AutoSellController:MoveToGinzo()
                 "Ginzo is streamed out and the configured Mistfall Harbor load position could not be used."
         end
 
-        print(
+        HubDebug(
             "[Combat Hub] Auto Sell: loading Ginzo / Mistfall Harbor using "
                 .. tostring(
                     LoadSource
@@ -12550,6 +17662,7 @@ function AutoSellController:SellCurrentCoins()
         or self.Busy
         or CollectibleInteractionBusy
         or Settings.__LootFarmBusy
+        or Settings.__BossRewardBusy
         or Settings.__RaidCollecting
         or RaidController.Busy
         or self:IsDungeonActive()
@@ -12593,7 +17706,7 @@ function AutoSellController:SellCurrentCoins()
         self.Busy =
             false
 
-        print(
+        HubDebug(
             "[Combat Hub] Auto Sell Coins: dungeon active, sale postponed"
         )
 
@@ -12704,10 +17817,41 @@ function AutoSellController:SellCurrentCoins()
             self.RemoteSettleDelay
         )
 
+        ------------------------------------------------------
+        -- INVENTORY REPLICATION CONFIRMATION
+        --
+        -- The captured SellItems payload is correct. Do not treat a single
+        -- ~0.5s unchanged read as failure; the replicated Inventory tree can
+        -- update later than the remote response.
+        ------------------------------------------------------
+
         local AfterTotal =
-            self:GetTotalCoins(
-                self:GetCoinAmounts()
+            BeforeTotal
+
+        local ReplicationStarted =
+            os.clock()
+
+        while HubRunning
+            and Settings.AutoSellCoins
+            and os.clock()
+                - ReplicationStarted
+                < self.RemoteReplicationTimeout
+        do
+            AfterTotal =
+                self:GetTotalCoins(
+                    self:GetCoinAmounts()
+                )
+
+            if AfterTotal
+                < BeforeTotal
+            then
+                break
+            end
+
+            task.wait(
+                0.10
             )
+        end
 
         if AfterTotal
             < BeforeTotal
@@ -12715,7 +17859,7 @@ function AutoSellController:SellCurrentCoins()
             SoldAny =
                 true
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Sell Coins: "
                     .. tostring(
                         BeforeTotal
@@ -12724,29 +17868,15 @@ function AutoSellController:SellCurrentCoins()
                     .. " coin item(s) sold"
             )
         else
-            -- Give slower inventory replication one extra chance before
-            -- deciding the server did not accept the sale.
-            task.wait(
-                0.30
+            -- Keep this quiet. The server may reject a sale temporarily
+            -- (distance/state/save guard/etc.). The next normal sell cycle
+            -- can try again without flooding the executor console.
+            HubDebug(
+                "[Combat Hub] Auto Sell Coins: SellItems returned without "
+                    .. "an inventory change; postponing"
             )
 
-            AfterTotal =
-                self:GetTotalCoins(
-                    self:GetCoinAmounts()
-                )
-
-            if AfterTotal
-                >= BeforeTotal
-            then
-                warn(
-                    "[Combat Hub] Auto Sell Coins: inventory did not change after SellItems"
-                )
-
-                break
-            end
-
-            SoldAny =
-                true
+            break
         end
     end
 
@@ -12937,7 +18067,7 @@ function AutoSellController:SellWhenSafe(
             self:GetCoinAmounts()
         ) <= 0
         then
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Sell Coins: 10-minute check found no coins"
             )
 
@@ -12956,7 +18086,7 @@ function AutoSellController:SellWhenSafe(
                 DungeonWaitLogged =
                     true
 
-                print(
+                HubDebug(
                     "[Combat Hub] Auto Sell Coins: 10-minute timer reached, "
                         .. "but dungeon is active • sale postponed"
                 )
@@ -12973,7 +18103,7 @@ function AutoSellController:SellWhenSafe(
             DungeonWaitLogged =
                 false
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Sell Coins: dungeon ended • resuming pending sale"
             )
         end
@@ -12981,10 +18111,11 @@ function AutoSellController:SellWhenSafe(
         if not self.Busy
             and not CollectibleInteractionBusy
             and not Settings.__LootFarmBusy
+            and not Settings.__BossRewardBusy
             and not Settings.__RaidCollecting
             and not RaidController.Busy
         then
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Sell Coins: "
                     .. tostring(
                         Reason
@@ -13039,7 +18170,7 @@ function AutoSellController:Start()
     local MyLoopID =
         self.LoopID
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Sell Coins enabled • next check in 10 minutes"
     )
 
@@ -13109,7 +18240,7 @@ function AutoSellController:Start()
             if HubRunning
                 and Settings.AutoSellCoins
             then
-                print(
+                HubDebug(
                     "[Combat Hub] Auto Sell Coins: next check in 10 minutes"
                 )
             end
@@ -13916,7 +19047,7 @@ function AutoBlockController:WatchClientAnimatorState(
             Model
         )
 
-        print(
+        HubDebug(
             "[Combat Hub] Auto Block CurrentAnim: "
                 .. tostring(
                     Model.Name
@@ -14702,7 +19833,7 @@ function AutoBlockController:HeartbeatStep()
                     Threat
                 )
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Block threat: "
                     .. tostring(
                         Threat.Name
@@ -16188,7 +21319,7 @@ function AutoSkillController:UseSelectedKey(
         )
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Skills: "
             .. tostring(
                 KeyName
@@ -16385,10 +21516,13 @@ function AutoSkillController:Stop()
 end
 
 
-local MainRow =
+local CombatRow =
     MainTab:CreateGroup()
 
-MainRow:CreateToggle({
+local LootPickupRow =
+    LootTab:CreateGroup()
+
+CombatRow:CreateToggle({
     name = "Auto Click",
     value = false,
     flag = "AutoClick",
@@ -16410,7 +21544,7 @@ MainRow:CreateToggle({
 })
 
 
-MainRow:CreateToggle({
+CombatRow:CreateToggle({
     name = "Auto Block",
     value = false,
     flag = "AutoBlock",
@@ -16431,7 +21565,7 @@ MainRow:CreateToggle({
     end,
 })
 
-MainRow:CreateToggle({
+CombatRow:CreateToggle({
     name = "Auto Skills",
     value = false,
     flag = "AutoSkills",
@@ -16470,7 +21604,7 @@ MainRow:CreateToggle({
 })
 
 
-MainRow:CreateToggle({
+LootPickupRow:CreateToggle({
     name = "Auto Open Chest",
     value = false,
     flag = "AutoOpenChest",
@@ -16491,7 +21625,7 @@ MainRow:CreateToggle({
     end,
 })
 
-MainRow:CreateToggle({
+LootPickupRow:CreateToggle({
     name = "Auto Pick Up Loot/Souls",
     value = false,
     flag = "AutoPickUpLoot",
@@ -16513,60 +21647,8 @@ MainRow:CreateToggle({
     end,
 })
 
-MainRow:CreateToggle({
-    name = "Auto Sell Coins",
-    value = false,
-    flag = "AutoSellCoins",
-
-    callback = function(Value)
-        if Value then
-            AutoSellController:Start()
-        else
-            AutoSellController:Stop()
-        end
-
-        Toast(
-            "Auto Sell Coins",
-            Value
-                and "Enabled • every 10 min • automatically waits until dungeon ends"
-                or "Disabled"
-        )
-    end,
-})
-
-
-MainRow:CreateToggle({
-    name = "Auto Raid Chest",
-    value = false,
-    flag = "AutoRaidChest",
-
-    callback = function(Value)
-        Settings.AutoRaidChest =
-            Value
-
-        if Value then
-            RaidController:Start()
-        else
-            RaidController:Stop()
-        end
-
-        Toast(
-            "Auto Raid Chest",
-            Value
-                and (
-                    Settings.AutoClick
-                    and "Enabled • Auto Click attacks • waits in place when no cache is active"
-                    or "Enabled • turn on Auto Click to damage raid guards"
-                )
-                or "Disabled"
-        )
-    end,
-})
-
-
 MainTab:CreateDropdown({
     name = "Auto Skill Keys",
-    description = "Select the skill keybinds Auto Skills should cycle. Hold-capable skills are charged automatically.",
     options = {
         "Z",
         "X",
@@ -16623,6 +21705,9 @@ MainTab:CreateDropdown({
         end
     end,
 })
+
+
+MainTab:CreateDivider()
 
 
 MainTab:CreateDropdown({
@@ -16700,6 +21785,82 @@ WeaponSlotRow:CreateToggle({
 
 
 MainTab:CreateDropdown({
+    name = "Equipment Priority",
+    options = {
+        "Damage",
+        "Health",
+    },
+    value = "Damage",
+    flag = "BestEquipmentPriority",
+
+    callback = function(Value)
+        if Value
+            ~= "Damage"
+            and Value
+                ~= "Health"
+        then
+            return
+        end
+
+        Settings.BestEquipmentPriority =
+            Value
+
+        AutoBestEquipmentController.LastSummary =
+            ""
+
+        if Settings.AutoEquipBestEquipment then
+            task.defer(function()
+                AutoBestEquipmentController:Step()
+            end)
+        end
+
+        Toast(
+            "Equipment Priority",
+            Value
+        )
+    end,
+})
+
+
+
+local BestEquipmentRow =
+    MainTab:CreateGroup()
+
+BestEquipmentRow:CreateToggle({
+    name = "Auto Equip Best Equipment",
+    value = false,
+    flag = "AutoEquipBestEquipment",
+
+    callback = function(Value)
+        if Value then
+            AutoBestEquipmentController:Start()
+
+            HubDebug(
+                "[Combat Hub] Auto Best Equipment enabled • priority="
+                    .. tostring(
+                        Settings.BestEquipmentPriority
+                    )
+            )
+        else
+            AutoBestEquipmentController:Stop()
+        end
+
+        Toast(
+            "Auto Equip Best Equipment",
+            Value
+                and (
+                    "Enabled • best Stats gear for "
+                    .. tostring(
+                        Settings.BestEquipmentPriority
+                    )
+                )
+                or "Disabled"
+        )
+    end,
+})
+
+
+LootTab:CreateDropdown({
     name = "Loot Rarity",
     options = LootRarities,
     value = "Any",
@@ -16729,56 +21890,255 @@ MainTab:CreateDropdown({
 })
 
 
-MainTab:CreateDivider()
+
+LootTab:CreateDivider()
+
+local LootUtilityRow =
+    LootTab:CreateGroup()
+
+LootUtilityRow:CreateToggle({
+    name = "Auto Raid Chest",
+    value = false,
+    flag = "AutoRaidChest",
+
+    callback = function(Value)
+        Settings.AutoRaidChest =
+            Value
+
+        if Value then
+            RaidController:Start()
+        else
+            RaidController:Stop()
+        end
+
+        Toast(
+            "Auto Raid Chest",
+            Value
+                and (
+                    Settings.AutoClick
+                    and "Enabled • Auto Click attacks • waits in place when no cache is active"
+                    or "Enabled • turn on Auto Click to damage raid guards"
+                )
+                or "Disabled"
+        )
+    end,
+})
+
+
+LootUtilityRow:CreateToggle({
+    name = "Auto Sell Coins",
+    value = false,
+    flag = "AutoSellCoins",
+
+    callback = function(Value)
+        if Value then
+            AutoSellController:Start()
+        else
+            AutoSellController:Stop()
+        end
+
+        Toast(
+            "Auto Sell Coins",
+            Value
+                and "Enabled • every 10 min • automatically waits until dungeon ends"
+                or "Disabled"
+        )
+    end,
+})
 
 
 local EnemyMobDropdown
 
 EnemyMobDropdown =
-    MainTab:CreateDropdown({
+    FarmTab:CreateDropdown({
         name = "Enemy / Boss",
         options = FarmMobOptions,
-        value = "Bandit",
-        flag = "SelectedFarmMob",
+        value = {
+            "Bandit",
+        },
+        multiSelect = true,
+        flag = "SelectedFarmMobs",
 
         callback = function(Value)
-            if IsFarmMobDivider(
+            local Selected =
+                {}
+
+            local Seen =
+                {}
+
+            local RawCount =
+                0
+
+            if type(
                 Value
-            ) then
-                if EnemyMobDropdown then
-                    EnemyMobDropdown:Set(
-                        Settings.SelectedFarmMob,
-                        true
+            ) == "table"
+            then
+                for _,
+                    Name in ipairs(
+                        Value
                     )
+                do
+                    RawCount +=
+                        1
+
+                    if type(
+                        Name
+                    ) == "string"
+                        and not IsFarmMobDivider(
+                            Name
+                        )
+                        and FarmMobConfigs[
+                            Name
+                        ]
+                        and not Seen[
+                            Name
+                        ]
+                    then
+                        Seen[
+                            Name
+                        ] =
+                            true
+
+                        table.insert(
+                            Selected,
+                            Name
+                        )
+                    end
                 end
-
-                return
-            end
-
-            if not FarmMobConfigs[
+            elseif type(
                 Value
-            ] then
-                return
+            ) == "string"
+                and not IsFarmMobDivider(
+                    Value
+                )
+                and FarmMobConfigs[
+                    Value
+                ]
+            then
+                table.insert(
+                    Selected,
+                    Value
+                )
             end
+
+            Settings.SelectedFarmMobs =
+                Selected
 
             Settings.SelectedFarmMob =
-                Value
+                Selected[
+                    1
+                ]
 
-            QuestFarmController:ResetTarget()
+            if EnemyMobDropdown
+                and type(
+                    Value
+                ) == "table"
+                and RawCount ~= #Selected
+            then
+                EnemyMobDropdown:Set(
+                    Selected,
+                    true
+                )
+            end
 
-            if Settings.AutoFarm then
+            QuestFarmController:ResetTarget(
+                "Farm"
+            )
+
+            if Settings.AutoFarm
+                or Settings.AutoFarmBoss
+            then
                 QuestFarmController:RefreshRunState()
             end
 
             Toast(
-                "Enemy Mob",
-                tostring(Value)
+                "Enemy / Boss",
+                #Selected > 0
+                    and table.concat(
+                        Selected,
+                        ", "
+                    )
+                    or "No targets selected"
             )
         end,
     })
 
 
-MainTab:CreateDropdown({
+
+local FarmTargetRow =
+    FarmTab:CreateGroup()
+
+FarmTargetRow:CreateToggle({
+    name = "Auto Farm",
+    value = false,
+    flag = "AutoFarm",
+
+    callback = function(Value)
+        Settings.AutoFarm =
+            Value
+
+        QuestFarmController:RefreshRunState()
+
+        local Selected =
+            Settings.SelectedFarmMobs
+
+        Toast(
+            "Auto Farm",
+            Value
+                and (
+                    type(
+                        Selected
+                    ) == "table"
+                    and #Selected > 0
+                    and (
+                        "Farming "
+                        .. table.concat(
+                            Selected,
+                            ", "
+                        )
+                    )
+                    or "Enabled • no targets selected"
+                )
+                or "Disabled"
+        )
+    end,
+})
+
+
+FarmTargetRow:CreateToggle({
+    name = "Auto Farm Boss",
+    value = false,
+    flag = "AutoFarmBoss",
+
+    callback = function(Value)
+        Settings.AutoFarmBoss =
+            Value
+
+        QuestFarmController:ResetTarget(
+            "Farm"
+        )
+
+        QuestFarmController:RefreshRunState()
+
+        Toast(
+            "Auto Farm Boss",
+            Value
+                and (
+                    "Enabled • farming all "
+                    .. tostring(
+                        #FarmBossNames
+                    )
+                    .. " bosses"
+                )
+                or "Disabled"
+        )
+    end,
+})
+
+
+FarmTab:CreateDivider()
+
+FarmTab:CreateDropdown({
     name = "Quest",
     options = QuestController.Order,
     value = "Ill take 3 bandits",
@@ -16812,7 +22172,60 @@ MainTab:CreateDropdown({
 })
 
 
-MainTab:CreateDropdown({
+
+local FarmQuestRow =
+    FarmTab:CreateGroup()
+
+FarmQuestRow:CreateToggle({
+    name = "Auto Quest",
+    value = false,
+    flag = "AutoQuest",
+
+    callback = function(Value)
+        Settings.AutoQuest =
+            Value
+
+        if Value then
+            QuestController:Start()
+        else
+            QuestController:Stop()
+        end
+
+        Toast(
+            "Auto Quest",
+            Value
+                and "Enabled"
+                or "Disabled"
+        )
+    end,
+})
+
+
+FarmQuestRow:CreateToggle({
+    name = "Auto Farm Quest",
+    value = false,
+    flag = "AutoFarmQuest",
+
+    callback = function(Value)
+        Settings.AutoFarmQuest =
+            Value
+
+        QuestFarmController:RefreshRunState()
+
+        Toast(
+            "Auto Farm Quest",
+            Value
+                and "Enabled"
+                or "Disabled"
+        )
+    end,
+})
+
+
+
+FarmTab:CreateDivider()
+
+FarmTab:CreateDropdown({
     name = "Farm Movement",
     options = {
         "Teleport",
@@ -16828,6 +22241,7 @@ MainTab:CreateDropdown({
         QuestFarmController:ResetTarget()
 
         if Settings.AutoFarm
+            or Settings.AutoFarmBoss
             or Settings.AutoFarmDungeon
             or Settings.AutoFarmQuest
         then
@@ -16844,7 +22258,7 @@ MainTab:CreateDropdown({
 })
 
 
-MainTab:CreateDropdown({
+FarmTab:CreateDropdown({
     name = "Farm Position",
     options = {
         "Above",
@@ -16861,6 +22275,7 @@ MainTab:CreateDropdown({
         QuestFarmController:ResetTarget()
 
         if Settings.AutoFarm
+            or Settings.AutoFarmBoss
             or Settings.AutoFarmDungeon
             or Settings.AutoFarmQuest
         then
@@ -16877,7 +22292,7 @@ MainTab:CreateDropdown({
 })
 
 
-MainTab:CreateSlider({
+FarmTab:CreateSlider({
     name = "Farm Range",
     range = {
         3,
@@ -16896,7 +22311,7 @@ MainTab:CreateSlider({
 })
 
 
-MainTab:CreateSlider({
+FarmTab:CreateSlider({
     name = "Tween Speed",
     range = {
         25,
@@ -16917,7 +22332,7 @@ MainTab:CreateSlider({
 
 
 --// ============================================================
---// AUTO OUWIGAHARA NORMAL
+--// AUTO JOIN OUWIGAHARA NORMAL
 --// ============================================================
 --
 -- Flow:
@@ -16953,9 +22368,28 @@ local AutoOuwigaharaController = {
     ProcessedRewardPrompts = {},
     RewardSpawnWait = 20,
     RewardCharacterWait = 15,
-    RewardLootRadius = 45,
-    RewardLootQuietWindow = 0.8,
-    PaidPromptRespawnWait = 2.5,
+
+    -- Free caches can replicate a little later than the first batch.
+    -- Never advance to the paid chest until the free list has stayed empty
+    -- for this entire window.
+    FreeChestEmptyConfirmTime = 2.25,
+
+    -- Reward drops can appear after the chest prompt disappears. Give the
+    -- first drop time to spawn, then require a quiet period after the last
+    -- collected prompt before moving on.
+    RewardLootRadius = 55,
+    RewardLootSpawnWait = 2.75,
+    RewardLootQuietWindow = 1.35,
+    RewardLootMaxWait = 16,
+
+    -- Require the Points balance to stay affordable briefly before moving
+    -- to the paid Ouwigahara Chest.
+    PaidAffordabilityConfirmTime = 0.40,
+
+    -- Ouwigahara Shop reseals/unlocks the paid chest after 6 seconds.
+    PaidResealSeconds = 6.25,
+    PaidPromptRespawnWait = 7.50,
+
     LeavePromptWait = 6,
     LeaveCooldownUntil = 0,
 
@@ -17232,6 +22666,78 @@ function AutoOuwigaharaController:GetStartPad()
 end
 
 
+function AutoOuwigaharaController:IsInRewardShops()
+    return LocalPlayer:GetAttribute(
+        "InShops"
+    ) == true
+end
+
+
+function AutoOuwigaharaController:GetMinigameState()
+    return tostring(
+        workspace:GetAttribute(
+            "MinigameState"
+        )
+        or ""
+    )
+end
+
+
+function AutoOuwigaharaController:GetExpectedCacheCount()
+    local Value =
+        tonumber(
+            workspace:GetAttribute(
+                "MinigameCaches"
+            )
+        )
+
+    if not Value then
+        return 0
+    end
+
+    return math.max(
+        0,
+        math.floor(
+            Value
+        )
+    )
+end
+
+
+function AutoOuwigaharaController:GetRunPoints()
+    -- RunPoints is the real Ouwigahara score attribute.
+    -- leaderstats.Points is only a mirrored display value.
+    local AttributePoints =
+        tonumber(
+            LocalPlayer:GetAttribute(
+                "RunPoints"
+            )
+        )
+
+    if AttributePoints ~= nil then
+        return AttributePoints
+    end
+
+    local PointsValue =
+        self:GetPointsValue()
+
+    return PointsValue
+        and tonumber(
+            PointsValue.Value
+        )
+        or 0
+end
+
+
+function AutoOuwigaharaController:GetHearts()
+    return tonumber(
+        LocalPlayer:GetAttribute(
+            "Hearts"
+        )
+    )
+end
+
+
 function AutoOuwigaharaController:GetOuwigaharaFloorLabel()
     local PlayerGui =
         LocalPlayer:FindFirstChild(
@@ -17304,15 +22810,17 @@ end
 
 
 function AutoOuwigaharaController:IsRewardResultsVisible()
+    -- SendToShops/GiveUp sets this on the player.
+    if self:IsInRewardShops() then
+        return true
+    end
+
+    -- UI fallback during transition.
     local FloorText =
         string.lower(
             self:GetOuwigaharaFloorText()
         )
 
-    -- Confirmed reward/results state:
-    --   "Floor 19 reached"
-    --
-    -- During the active dungeon this label does not include "reached".
     return string.find(
         FloorText,
         "reached",
@@ -17321,14 +22829,23 @@ function AutoOuwigaharaController:IsRewardResultsVisible()
     ) ~= nil
 end
 
-
 function AutoOuwigaharaController:IsDungeonRunning()
-    -- The Ouwigahara top bar remains visible in the post-run reward room.
-    -- "Floor ## reached" is the authoritative signal that combat is over.
+    if self:IsInRewardShops() then
+        return false
+    end
+
+    local State =
+        self:GetMinigameState()
+
+    if State == "Climbing" then
+        return true
+    end
+
     if self:IsRewardResultsVisible() then
         return false
     end
 
+    -- GUI fallback only when the authoritative state is not decisive.
     if QuestFarmController
         and type(
             QuestFarmController.IsDungeonUiActive
@@ -17341,14 +22858,13 @@ function AutoOuwigaharaController:IsDungeonRunning()
             end)
 
         if Success then
-            return Active
-                == true
+            return Active == true
+                and State ~= "Lobby"
         end
     end
 
     return false
 end
-
 
 function AutoOuwigaharaController:SetStatus(
     Status
@@ -17362,7 +22878,7 @@ function AutoOuwigaharaController:SetStatus(
     self.LastStatus =
         Status
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Ouwigahara: "
             .. tostring(
                 Status
@@ -17475,7 +22991,7 @@ end)
         self.TeleportHelperQueued =
             true
 
-        print(
+        HubDebug(
             "[Combat Hub] Auto Ouwigahara: queued cross-teleport lobby ReadyUp helper"
         )
     end
@@ -17532,7 +23048,7 @@ function AutoOuwigaharaController:QueueNormal()
         return false
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Ouwigahara: Normal queue request sent"
     )
 
@@ -17700,7 +23216,7 @@ function AutoOuwigaharaController:TriggerReadyUp(
         return false
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Ouwigahara: ReadyUp triggered"
     )
 
@@ -17936,7 +23452,7 @@ function AutoOuwigaharaController:TeleportNearPrompt(
                 ).Magnitude
                 or math.huge
 
-            print(
+            HubDebug(
                 "[Combat Hub] Reward teleport attempt "
                     .. tostring(
                         Attempt
@@ -18187,8 +23703,8 @@ function AutoOuwigaharaController:RunAutoDieSequence(
     local MySequenceId =
         self.AutoDieSequenceId
 
-    print(
-        "[Combat Hub] Auto Die at X Points triggered • points="
+    HubDebug(
+        "[Combat Hub] Auto Die triggered • RunPoints="
             .. tostring(
                 CurrentPoints
             )
@@ -18196,18 +23712,23 @@ function AutoOuwigaharaController:RunAutoDieSequence(
             .. tostring(
                 Threshold
             )
-            .. " • resetting game character "
+            .. " Hearts="
+            .. tostring(
+                self:GetHearts()
+                or "?"
+            )
+            .. " • up to "
             .. tostring(
                 self.AutoDieRespawnCount
             )
-            .. " times"
+            .. " life losses"
     )
 
     task.spawn(function()
         local PreviousCharacter =
             nil
 
-        for RespawnIndex = 1,
+        for DeathIndex = 1,
             self.AutoDieRespawnCount
         do
             if not HubRunning
@@ -18218,13 +23739,20 @@ function AutoOuwigaharaController:RunAutoDieSequence(
                 break
             end
 
-            -- Never continue the reset sequence after the game has already
-            -- moved us to the results/reward room.
-            if self:IsRewardResultsVisible() then
-                print(
-                    "[Combat Hub] Auto Die at X Points: reward room reached • sequence finished"
-                )
+            if self:IsInRewardShops()
+                or LocalPlayer:GetAttribute(
+                    "Spectating"
+                ) == true
+            then
+                break
+            end
 
+            local HeartsBefore =
+                self:GetHearts()
+
+            if HeartsBefore ~= nil
+                and HeartsBefore <= 0
+            then
                 break
             end
 
@@ -18239,20 +23767,25 @@ function AutoOuwigaharaController:RunAutoDieSequence(
                 or not Humanoid
             then
                 warn(
-                    "[Combat Hub] Auto Die at X Points: timed out waiting for game character"
+                    "[Combat Hub] Auto Die: timed out waiting for living character"
                 )
 
                 break
             end
 
-            print(
-                "[Combat Hub] Auto Die at X Points: game reset "
+            HubDebug(
+                "[Combat Hub] Auto Die: life-loss "
                     .. tostring(
-                        RespawnIndex
+                        DeathIndex
                     )
                     .. "/"
                     .. tostring(
                         self.AutoDieRespawnCount
+                    )
+                    .. " • Hearts before="
+                    .. tostring(
+                        HeartsBefore
+                        or "?"
                     )
             )
 
@@ -18263,7 +23796,68 @@ function AutoOuwigaharaController:RunAutoDieSequence(
                 Character
             )
 
-            if RespawnIndex
+            local LifeStarted =
+                os.clock()
+
+            while HubRunning
+                and Settings.AutoDieAtPoints
+                and MySequenceId
+                    == self.AutoDieSequenceId
+                and os.clock()
+                    - LifeStarted
+                    < self.AutoDieCharacterWait
+            do
+                local HeartsNow =
+                    self:GetHearts()
+
+                if self:IsInRewardShops()
+                    or LocalPlayer:GetAttribute(
+                        "Spectating"
+                    ) == true
+                    or (
+                        HeartsNow ~= nil
+                        and HeartsNow <= 0
+                    )
+                then
+                    break
+                end
+
+                if HeartsBefore ~= nil
+                    and HeartsNow ~= nil
+                    and HeartsNow < HeartsBefore
+                then
+                    break
+                end
+
+                task.wait(
+                    0.10
+                )
+            end
+
+            local HeartsAfter =
+                self:GetHearts()
+
+            HubDebug(
+                "[Combat Hub] Auto Die: Hearts after="
+                    .. tostring(
+                        HeartsAfter
+                        or "?"
+                    )
+            )
+
+            if self:IsInRewardShops()
+                or LocalPlayer:GetAttribute(
+                    "Spectating"
+                ) == true
+                or (
+                    HeartsAfter ~= nil
+                    and HeartsAfter <= 0
+                )
+            then
+                break
+            end
+
+            if DeathIndex
                 < self.AutoDieRespawnCount
             then
                 local NewCharacter =
@@ -18274,7 +23868,7 @@ function AutoOuwigaharaController:RunAutoDieSequence(
 
                 if not NewCharacter then
                     warn(
-                        "[Combat Hub] Auto Die at X Points: no next respawn detected"
+                        "[Combat Hub] Auto Die: next respawn never appeared"
                     )
 
                     break
@@ -18284,7 +23878,7 @@ function AutoOuwigaharaController:RunAutoDieSequence(
                     nil
 
                 task.wait(
-                    0.55
+                    0.45
                 )
             end
         end
@@ -18300,12 +23894,14 @@ function AutoOuwigaharaController:RunAutoDieSequence(
     return true
 end
 
-
 function AutoOuwigaharaController:CheckAutoDieAtPoints()
     if not Settings.AutoDieAtPoints
         or self.AutoDieBusy
         or self.AutoDieTriggeredThisRun
-        or self:IsRewardResultsVisible()
+        or self:IsInRewardShops()
+        or LocalPlayer:GetAttribute(
+            "Spectating"
+        ) == true
     then
         return false
     end
@@ -18321,21 +23917,20 @@ function AutoOuwigaharaController:CheckAutoDieAtPoints()
             )
         )
 
-    local PointsValue =
-        self:GetPointsValue()
-
-    if not PointsValue then
-        return false
-    end
-
     local CurrentPoints =
-        tonumber(
-            PointsValue.Value
-        )
-        or 0
+        self:GetRunPoints()
 
     if CurrentPoints
         < Threshold
+    then
+        return false
+    end
+
+    local Hearts =
+        self:GetHearts()
+
+    if Hearts ~= nil
+        and Hearts <= 0
     then
         return false
     end
@@ -18345,7 +23940,6 @@ function AutoOuwigaharaController:CheckAutoDieAtPoints()
         Threshold
     )
 end
-
 
 function AutoOuwigaharaController:WaitForRewardCharacter(
     Timeout
@@ -18492,20 +24086,26 @@ function AutoOuwigaharaController:GetRewardModelState()
             "Ouwigahara Chest"
         )
 
-    return Cache,
-        Chest
-end
+    local DeepCache =
+        self:GetExactRewardModel(
+            "Ouwigahara Deep Cache"
+        )
 
+    return Cache,
+        Chest,
+        DeepCache
+end
 
 function AutoOuwigaharaController:HasRewardRoomModels()
     local Cache,
-        Chest =
+        Chest,
+        DeepCache =
         self:GetRewardModelState()
 
     return Cache ~= nil
+        or DeepCache ~= nil
         or Chest ~= nil
 end
-
 
 function AutoOuwigaharaController:GetChestContainer(
     Prompt
@@ -18662,6 +24262,19 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
         )
     end
 
+    local DeepCache =
+        self:GetExactRewardModel(
+            "Ouwigahara Deep Cache"
+        )
+
+    if DeepCache then
+        AddFree(
+            self:GetChestPromptFromModel(
+                DeepCache
+            )
+        )
+    end
+
     local Chest =
         self:GetExactRewardModel(
             "Ouwigahara Chest"
@@ -18751,8 +24364,12 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
                 )
             elseif ContainerName
                 == "ouwigahara cache"
+                or ContainerName
+                    == "ouwigahara deep cache"
                 or LowerObjectText
                     == "ouwigahara cache"
+                or LowerObjectText
+                    == "ouwigahara deep cache"
                 or string.match(
                     ObjectText,
                     "^Floor%s+%d+"
@@ -18773,6 +24390,10 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
     table.sort(
         Free,
         function(A, B)
+            if A == B then
+                return false
+            end
+
             local AContainer =
                 self:GetChestContainer(
                     A
@@ -18783,19 +24404,30 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
                     B
                 )
 
-            -- Ouwigahara Cache first.
-            if AContainer
-                and AContainer.Name
-                    == "Ouwigahara Cache"
-            then
-                return true
-            end
+            local AIsCache =
+                AContainer
+                and (
+                    AContainer.Name
+                        == "Ouwigahara Cache"
+                    or AContainer.Name
+                        == "Ouwigahara Deep Cache"
+                )
+                or false
 
-            if BContainer
-                and BContainer.Name
-                    == "Ouwigahara Cache"
+            local BIsCache =
+                BContainer
+                and (
+                    BContainer.Name
+                        == "Ouwigahara Cache"
+                    or BContainer.Name
+                        == "Ouwigahara Deep Cache"
+                )
+                or false
+
+            if AIsCache
+                ~= BIsCache
             then
-                return false
+                return AIsCache
             end
 
             local ANumber =
@@ -18822,8 +24454,14 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
                 )
                 or 0
 
-            return ANumber
-                < BNumber
+            if ANumber
+                ~= BNumber
+            then
+                return ANumber
+                    < BNumber
+            end
+
+            return false
         end
     )
 
@@ -18889,45 +24527,36 @@ end
 
 
 function AutoOuwigaharaController:IsRewardRoomAvailable()
-    ----------------------------------------------------------
-    -- PRIMARY SIGNAL: RESULTS FLOOR TEXT
-    ----------------------------------------------------------
+    if self:IsInRewardShops() then
+        return true
+    end
 
     if self:IsRewardResultsVisible() then
         return true
     end
 
-    ----------------------------------------------------------
-    -- FALLBACK SIGNALS
-    ----------------------------------------------------------
-
-    -- Exact workspace.Chests model names remain useful if the UI is slow
-    -- to replicate or disappears after the chest pass.
-    if self:HasRewardRoomModels() then
-        return true
-    end
-
-    if self:HasRewardChests() then
-        return true
-    end
-
-    -- After we've already identified the run transition, keep the reward
-    -- room alive long enough to use LeavePad even after prompts disappear.
-    if self.WasDungeonRunning
-        or self.PostRunPending
-        or self.RewardPassComplete
+    if self:HasRewardRoomModels()
+        or self:HasRewardChests()
     then
-        local LeavePad =
-            self:GetLeavePad()
+        return true
+    end
 
-        if LeavePad then
-            return true
-        end
+    -- Ended timestamp is secondary only; combine it with local transition
+    -- state so an old server timestamp cannot misclassify the lobby.
+    if workspace:GetAttribute(
+        "MinigameRunEnded"
+    ) ~= nil
+        and (
+            self.WasDungeonRunning
+            or self.PostRunPending
+            or self.RewardPassComplete
+        )
+    then
+        return true
     end
 
     return false
 end
-
 
 function AutoOuwigaharaController:HasActionableRewardChest()
     local Free,
@@ -18945,15 +24574,37 @@ function AutoOuwigaharaController:HasActionableRewardChest()
         return false
     end
 
-    local PointsValue =
-        self:GetPointsValue()
+    local Cost =
+        tonumber(
+            Entry.Cost
+        )
+        or 30000
+
+    return self:GetRunPoints()
+        >= Cost
+end
+
+function AutoOuwigaharaController:GetAffordablePaidChest(
+    ConfirmTime
+)
+    local _,
+        Paid =
+        self:GetRewardChestPrompts()
+
+    local Entry =
+        Paid[1]
+
+    if not Entry
+        or not Entry.Prompt
+        or not Entry.Prompt.Parent
+    then
+        return nil,
+            self:GetRunPoints(),
+            30000
+    end
 
     local CurrentPoints =
-        PointsValue
-        and tonumber(
-            PointsValue.Value
-        )
-        or 0
+        self:GetRunPoints()
 
     local Cost =
         tonumber(
@@ -18961,9 +24612,58 @@ function AutoOuwigaharaController:HasActionableRewardChest()
         )
         or 30000
 
-    return CurrentPoints >= Cost
-end
+    if CurrentPoints
+        < Cost
+    then
+        return nil,
+            CurrentPoints,
+            Cost
+    end
 
+    ConfirmTime =
+        tonumber(
+            ConfirmTime
+        )
+        or self.PaidAffordabilityConfirmTime
+
+    local StartedAt =
+        os.clock()
+
+    while HubRunning
+        and Settings.AutoRewardChests
+        and os.clock()
+            - StartedAt
+            < ConfirmTime
+    do
+        local FreeNow =
+            self:GetRewardChestPrompts()
+
+        if #FreeNow > 0 then
+            return nil,
+                self:GetRunPoints(),
+                Cost
+        end
+
+        CurrentPoints =
+            self:GetRunPoints()
+
+        if CurrentPoints
+            < Cost
+        then
+            return nil,
+                CurrentPoints,
+                Cost
+        end
+
+        task.wait(
+            0.08
+        )
+    end
+
+    return Entry,
+        CurrentPoints,
+        Cost
+end
 
 function AutoOuwigaharaController:GetPointsValue()
     local Leaderstats =
@@ -19134,14 +24834,21 @@ function AutoOuwigaharaController:CollectRewardLoot(
     local StartedAt =
         os.clock()
 
+    local SawLoot =
+        false
+
     local LastFoundAt =
-        os.clock()
+        nil
+
+    self:SetStatus(
+        "waiting for reward loot"
+    )
 
     while HubRunning
-        and self:IsRewardAutomationEnabled()
+        and Settings.AutoRewardChests
         and os.clock()
             - StartedAt
-            < 12
+            < self.RewardLootMaxWait
     do
         local Prompt =
             self:FindRewardLootPrompt(
@@ -19150,27 +24857,92 @@ function AutoOuwigaharaController:CollectRewardLoot(
             )
 
         if Prompt then
+            SawLoot =
+                true
+
             LastFoundAt =
                 os.clock()
 
-            PickUpCollectiblePrompt(
-                Prompt,
-                true
+            self:SetStatus(
+                "collecting reward loot"
             )
 
+            local Picked =
+                PickUpCollectiblePrompt(
+                    Prompt,
+                    true
+                )
+
+            if Picked then
+                HubDebug(
+                    "[Combat Hub] Reward loot: collected "
+                        .. tostring(
+                            Prompt.ObjectText
+                            or Prompt.Name
+                        )
+                )
+            end
+
             task.wait(
-                0.08
+                0.10
             )
-        elseif os.clock()
-            - LastFoundAt
-            >= self.RewardLootQuietWindow
-        then
-            break
+        elseif not SawLoot then
+            if os.clock()
+                - StartedAt
+                >= self.RewardLootSpawnWait
+            then
+                HubDebug(
+                    "[Combat Hub] Reward loot: no drops appeared after spawn wait"
+                )
+
+                break
+            end
+
+            task.wait(
+                0.10
+            )
         else
+            local QuietFor =
+                os.clock()
+                - (
+                    LastFoundAt
+                    or StartedAt
+                )
+
+            if QuietFor
+                >= self.RewardLootQuietWindow
+            then
+                HubDebug(
+                    "[Combat Hub] Reward loot: clear • quiet "
+                        .. string.format(
+                            "%.2fs",
+                            QuietFor
+                        )
+                )
+
+                break
+            end
+
             task.wait(
                 0.10
             )
         end
+    end
+
+    local BusyStarted =
+        os.clock()
+
+    while (
+        CollectibleInteractionBusy
+        or LootMoveState.Busy
+    )
+        and os.clock()
+            - BusyStarted
+            < 4
+    do
+        task.wait(
+            0.08
+        )
     end
 
     Settings.__LootFarmBusy =
@@ -19178,6 +24950,8 @@ function AutoOuwigaharaController:CollectRewardLoot(
 
     CollectibleInteractionBusy =
         false
+
+    return SawLoot
 end
 
 
@@ -19277,7 +25051,7 @@ function AutoOuwigaharaController:LeaveRewardLobby()
     Settings.__DungeonEntryBusy =
         true
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Leave Dungeon: teleporting to workspace.Map.Shops.LeavePad"
     )
 
@@ -19320,7 +25094,7 @@ function AutoOuwigaharaController:LeaveRewardLobby()
         return false
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Auto Ouwigahara: teleported to workspace.Map.Shops.LeavePad"
     )
 
@@ -19360,7 +25134,7 @@ function AutoOuwigaharaController:LeaveRewardLobby()
         )
 
     if Success then
-        print(
+        HubDebug(
             "[Combat Hub] Auto Ouwigahara: LeavePad.Ouwigahara triggered"
         )
 
@@ -19419,10 +25193,6 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         "post-run rewards"
     )
 
-    ----------------------------------------------------------
-    -- Wait for the post-death character before any teleport.
-    ----------------------------------------------------------
-
     local Character,
         Root =
         self:WaitForRewardCharacter(
@@ -19432,18 +25202,17 @@ function AutoOuwigaharaController:HandlePostRunRewards()
     if not Character
         or not Root
     then
-        self:SetStatus(
-            "waiting for reward character"
-        )
-
         Finish()
 
         return false
     end
 
     ----------------------------------------------------------
-    -- Wait for ANY reward chest to replicate.
+    -- WAIT FOR THE SERVER-PUBLISHED CACHE COUNT WHEN AVAILABLE
     ----------------------------------------------------------
+
+    local ExpectedCaches =
+        self:GetExpectedCacheCount()
 
     local WaitStarted =
         os.clock()
@@ -19454,12 +25223,22 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             - WaitStarted
             < self.RewardSpawnWait
     do
-        if self:HasRewardChests() then
+        local Free,
+            Paid =
+            self:GetRewardChestPrompts()
+
+        if ExpectedCaches > 0 then
+            if #Free >= ExpectedCaches then
+                break
+            end
+        elseif #Free > 0
+            or #Paid > 0
+        then
             break
         end
 
         task.wait(
-            0.20
+            0.15
         )
     end
 
@@ -19467,8 +25246,12 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         PaidNow =
         self:GetRewardChestPrompts()
 
-    print(
-        "[Combat Hub] Reward lobby scan: free="
+    HubDebug(
+        "[Combat Hub] Reward shops • expectedCaches="
+            .. tostring(
+                ExpectedCaches
+            )
+            .. " visibleFree="
             .. tostring(
                 #FreeNow
             )
@@ -19476,19 +25259,18 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             .. tostring(
                 #PaidNow
             )
-            .. " points="
+            .. " RunPoints="
             .. tostring(
-                (
-                    self:GetPointsValue()
-                    and self:GetPointsValue().Value
-                )
-                or "?"
+                self:GetRunPoints()
             )
     )
 
     ----------------------------------------------------------
-    -- 1) FREE FLOOR CHESTS
+    -- 1) ALL FREE CACHE / DEEP CACHE / FLOOR REWARDS FIRST
     ----------------------------------------------------------
+
+    local FreeEmptySince =
+        nil
 
     while HubRunning
         and Settings.AutoRewardChests
@@ -19504,9 +25286,13 @@ function AutoOuwigaharaController:HandlePostRunRewards()
                 Free
             )
         do
-            if not self.ProcessedRewardPrompts[
-                Prompt
-            ] then
+            if Prompt
+                and Prompt.Parent
+                and Prompt.Enabled
+                and not self.ProcessedRewardPrompts[
+                    Prompt
+                ]
+            then
                 NextPrompt =
                     Prompt
 
@@ -19514,82 +25300,110 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             end
         end
 
-        if not NextPrompt then
-            break
-        end
+        if NextPrompt then
+            FreeEmptySince =
+                nil
 
-        local ChestCFrame =
-            self:GetPromptWorldCFrame(
-                NextPrompt
-            )
-
-        self:SetStatus(
-            "opening "
-                .. tostring(
-                    NextPrompt.ObjectText
-                    or "Floor chest"
+            local ChestCFrame =
+                self:GetPromptWorldCFrame(
+                    NextPrompt
                 )
-        )
 
-        local Opened =
-            self:TriggerWorldPrompt(
-                NextPrompt
-            )
-
-        if Opened then
-            self.ProcessedRewardPrompts[
-                NextPrompt
-            ] =
-                true
-
-            local FreeContainer =
+            local Container =
                 self:GetChestContainer(
                     NextPrompt
                 )
 
-            print(
-                "[Combat Hub] Auto Ouwigahara: opened free chest • "
+            local FreeName =
+                Container
+                and Container.Name
+                or NextPrompt.ObjectText
+                or "Free Reward"
+
+            self:SetStatus(
+                "opening free reward • "
                     .. tostring(
-                        FreeContainer
-                        and FreeContainer.Name
-                        or NextPrompt.ObjectText
-                        or "Free Reward Chest"
+                        FreeName
                     )
             )
 
-            task.wait(
-                0.35
-            )
+            local Opened =
+                self:TriggerWorldPrompt(
+                    NextPrompt
+                )
 
-            self:CollectRewardLoot(
-                ChestCFrame
-                and ChestCFrame.Position
-                or nil
-            )
-        else
-            -- Don't permanently skip a chest just because the new character
-            -- or streamed prompt wasn't ready for one attempt.
-            if not NextPrompt.Parent
-                or not NextPrompt.Enabled
-            then
+            if Opened then
                 self.ProcessedRewardPrompts[
                     NextPrompt
                 ] =
                     true
-            else
-                print(
-                    "[Combat Hub] Floor chest trigger failed • retrying"
+
+                HubDebug(
+                    "[Combat Hub] Opened free reward • "
+                        .. tostring(
+                            FreeName
+                        )
                 )
+
+                task.wait(
+                    0.25
+                )
+
+                self:CollectRewardLoot(
+                    ChestCFrame
+                    and ChestCFrame.Position
+                    or nil
+                )
+
+                task.wait(
+                    0.15
+                )
+            else
+                if not NextPrompt.Parent
+                    or not NextPrompt.Enabled
+                then
+                    self.ProcessedRewardPrompts[
+                        NextPrompt
+                    ] =
+                        true
+                end
+
+                task.wait(
+                    0.30
+                )
+            end
+        else
+            if FreeEmptySince == nil then
+                FreeEmptySince =
+                    os.clock()
+            end
+
+            local EmptyFor =
+                os.clock()
+                - FreeEmptySince
+
+            if EmptyFor
+                >= self.FreeChestEmptyConfirmTime
+            then
+                local FinalFree =
+                    self:GetRewardChestPrompts()
+
+                if #FinalFree == 0 then
+                    break
+                end
+
+                FreeEmptySince =
+                    nil
             end
 
             task.wait(
-                0.35
+                0.10
             )
         end
     end
 
     ----------------------------------------------------------
-    -- 2) PAID OUWIGAHARA CHEST
+    -- 2) PAID 30K OUWIGAHARA CHEST
     ----------------------------------------------------------
 
     local SafetyCount =
@@ -19602,51 +25416,35 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         SafetyCount +=
             1
 
-        local Entry =
-            self:WaitForPaidRewardPrompt(
-                self.PaidPromptRespawnWait
-            )
+        local FreeCheck =
+            self:GetRewardChestPrompts()
 
-        if not Entry
-            or not Entry.Prompt
-            or not Entry.Prompt.Parent
-        then
-            print(
-                "[Combat Hub] Auto Ouwigahara: paid chest prompt not available"
-            )
+        if #FreeCheck > 0 then
+            self.RewardPassComplete =
+                false
 
-            break
+            Finish()
+
+            return true
         end
 
-        local PointsValue =
-            self:GetPointsValue()
-
-        local CurrentPoints =
-            PointsValue
-            and tonumber(
-                PointsValue.Value
+        local Entry,
+            CurrentPoints,
+            Cost =
+            self:GetAffordablePaidChest(
+                self.PaidAffordabilityConfirmTime
             )
-            or 0
 
-        local Cost =
-            tonumber(
-                Entry.Cost
-            )
-            or 30000
-
-        if CurrentPoints
-            < Cost
-        then
-            print(
-                "[Combat Hub] Auto Ouwigahara: "
+        if not Entry then
+            HubDebug(
+                "[Combat Hub] Paid chest skipped • RunPoints="
                     .. tostring(
                         CurrentPoints
                     )
-                    .. " points left • need "
+                    .. " cost="
                     .. tostring(
                         Cost
                     )
-                    .. " for another Ouwigahara Chest"
             )
 
             break
@@ -19658,34 +25456,19 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             )
 
         local BeforePoints =
-            CurrentPoints
+            self:GetRunPoints()
 
         self:SetStatus(
-            "opening Ouwigahara Chest • "
+            "opening paid chest • "
                 .. tostring(
                     Cost
                 )
                 .. " points"
         )
 
-        print(
-            "[Combat Hub] Auto Ouwigahara: teleporting to Ouwigahara Chest • points="
-                .. tostring(
-                    CurrentPoints
-                )
-                .. " cost="
-                .. tostring(
-                    Cost
-                )
-        )
-
         if not self:TriggerWorldPrompt(
             Entry.Prompt
         ) then
-            print(
-                "[Combat Hub] Ouwigahara Chest trigger failed • retrying"
-            )
-
             task.wait(
                 0.40
             )
@@ -19696,50 +25479,34 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         local Deducted =
             false
 
-        if PointsValue
-            and PointsValue.Parent
-        then
-            local DeductStarted =
-                os.clock()
+        local DeductStarted =
+            os.clock()
 
-            while PointsValue.Parent
-                and os.clock()
-                    - DeductStarted
-                    < 4
-            do
-                if tonumber(
-                    PointsValue.Value
-                ) < BeforePoints
-                then
-                    Deducted =
-                        true
+        while HubRunning
+            and Settings.AutoRewardChests
+            and os.clock()
+                - DeductStarted
+                < 4
+        do
+            if self:GetRunPoints()
+                < BeforePoints
+            then
+                Deducted =
+                    true
 
-                    break
-                end
-
-                task.wait(
-                    0.08
-                )
+                break
             end
+
+            task.wait(
+                0.08
+            )
         end
 
-        print(
-            "[Combat Hub] Auto Ouwigahara: paid chest "
-                .. (
-                    Deducted
-                    and "confirmed"
-                    or "prompt triggered"
-                )
-                .. " • points now "
-                .. tostring(
-                    PointsValue
-                    and PointsValue.Value
-                    or "?"
-                )
-        )
+        local AfterPoints =
+            self:GetRunPoints()
 
         task.wait(
-            0.30
+            0.25
         )
 
         self:CollectRewardLoot(
@@ -19748,27 +25515,103 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             or nil
         )
 
-        if PointsValue
-            and PointsValue.Parent
-            and tonumber(
-                PointsValue.Value
-            ) >= BeforePoints
+        if not Deducted
+            or AfterPoints >= BeforePoints
         then
-            print(
-                "[Combat Hub] Paid chest did not deduct points • stopping paid loop"
+            HubDebug(
+                "[Combat Hub] Paid chest did not deduct RunPoints • stopping paid loop"
             )
 
             break
         end
 
-        task.wait(
-            0.25
-        )
+        local FreeAfterPaid =
+            self:GetRewardChestPrompts()
+
+        if #FreeAfterPaid > 0 then
+            self.RewardPassComplete =
+                false
+
+            Finish()
+
+            return true
+        end
+
+        -- Server waits 6 seconds before Reseal() + Unlock().
+        if AfterPoints >= Cost then
+            self:SetStatus(
+                "waiting for paid chest reseal"
+            )
+
+            local ResealStarted =
+                os.clock()
+
+            while HubRunning
+                and Settings.AutoRewardChests
+                and os.clock()
+                    - ResealStarted
+                    < self.PaidResealSeconds
+            do
+                local FreeDuringReseal =
+                    self:GetRewardChestPrompts()
+
+                if #FreeDuringReseal > 0 then
+                    self.RewardPassComplete =
+                        false
+
+                    Finish()
+
+                    return true
+                end
+
+                task.wait(
+                    0.10
+                )
+            end
+
+            self:WaitForPaidRewardPrompt(
+                self.PaidPromptRespawnWait
+            )
+        end
     end
 
     ----------------------------------------------------------
-    -- REWARD PASS COMPLETE
+    -- 3) FINAL FREE-CACHE / LOOT CHECK BEFORE LEAVE
     ----------------------------------------------------------
+
+    local FinalSafetyStarted =
+        os.clock()
+
+    while HubRunning
+        and Settings.AutoRewardChests
+        and os.clock()
+            - FinalSafetyStarted
+            < self.FreeChestEmptyConfirmTime
+    do
+        local FinalFree =
+            self:GetRewardChestPrompts()
+
+        if #FinalFree > 0 then
+            self.RewardPassComplete =
+                false
+
+            Finish()
+
+            return true
+        end
+
+        if CollectibleInteractionBusy
+            or LootMoveState.Busy
+            or Settings.__LootFarmBusy
+        then
+            FinalSafetyStarted =
+                os.clock()
+        end
+
+        task.wait(
+            0.10
+        )
+    end
 
     self.RewardPassComplete =
         true
@@ -19776,21 +25619,17 @@ function AutoOuwigaharaController:HandlePostRunRewards()
     self.PostRunPending =
         true
 
-    self:SetStatus(
-        Settings.AutoLeaveDungeon
-            and "reward chests done • ready to leave"
-            or "reward chests done"
-    )
-
-    print(
-        "[Combat Hub] Auto Reward Chests: reward pass complete"
+    HubDebug(
+        "[Combat Hub] Reward pass complete • RunPoints="
+            .. tostring(
+                self:GetRunPoints()
+            )
     )
 
     Finish()
 
     return true
 end
-
 
 function AutoOuwigaharaController:Step()
     if not HubRunning
@@ -19805,134 +25644,119 @@ function AutoOuwigaharaController:Step()
         return
     end
 
-    ----------------------------------------------------------
-    -- REWARD ROOM HAS PRIORITY OVER ACTIVE-DUNGEON UI.
-    --
-    -- Confirmed path:
-    -- PlayerGui.ComponentsHolder.MainNotificationFrame
-    --     .OuwigaharaTopBar.Bar.Floor
-    --
-    -- Confirmed results text example:
-    --     "Floor 19 reached"
-    ----------------------------------------------------------
+    local State =
+        self:GetMinigameState()
 
-    local FloorText =
-        self:GetOuwigaharaFloorText()
-
-    local RewardResultsVisible =
-        self:IsRewardResultsVisible()
+    local InShops =
+        self:IsInRewardShops()
 
     local CacheModel,
-        PaidModel =
+        PaidModel,
+        DeepCacheModel =
         self:GetRewardModelState()
 
-    local RewardModelsVisible =
-        CacheModel ~= nil
-        or PaidModel ~= nil
+    ----------------------------------------------------------
+    -- 1) REWARD SHOPS
+    ----------------------------------------------------------
 
-    local RewardRoomVisible =
-        RewardResultsVisible
-        or (
-            RewardModelsVisible
-            and not self:IsDungeonRunning()
-        )
+    if InShops
         or self:IsRewardRoomAvailable()
-
-    if RewardRoomVisible then
-        -- Results/reward state marks the end of the current run.
-        -- Arm Auto Die again for the next Ouwigahara run.
+    then
         self.AutoDieTriggeredThisRun =
+            false
+
+        self.WasDungeonRunning =
             false
 
         if self:IsRewardAutomationEnabled() then
             self.PostRunPending =
                 true
 
-        self.WasDungeonRunning =
-            false
+            self:SetStatus(
+                "reward shops • InShops="
+                    .. tostring(
+                        InShops
+                    )
+                    .. " • cache="
+                    .. tostring(
+                        CacheModel ~= nil
+                    )
+                    .. " • deep="
+                    .. tostring(
+                        DeepCacheModel ~= nil
+                    )
+                    .. " • paid="
+                    .. tostring(
+                        PaidModel ~= nil
+                    )
+                    .. " • RunPoints="
+                    .. tostring(
+                        self:GetRunPoints()
+                    )
+            )
 
-        self:SetStatus(
-            "reward room • "
-                .. (
-                    FloorText ~= ""
-                    and FloorText
-                    or "results detected"
-                )
-                .. " • Cache="
-                .. tostring(
-                    CacheModel ~= nil
-                )
-                .. " Chest="
-                .. tostring(
-                    PaidModel ~= nil
-                )
-        )
-
-        ------------------------------------------------------
-        -- 1) AUTO REWARD CHESTS
-        ------------------------------------------------------
-
-        if Settings.AutoRewardChests
-            and not self.RewardPassComplete
-        then
-            Settings.__RewardRoomBusy =
-                true
-
-            self:HandlePostRunRewards()
-
-            return
-        end
-
-        ------------------------------------------------------
-        -- 2) AUTO LEAVE DUNGEON
-        ------------------------------------------------------
-
-        if Settings.AutoLeaveDungeon then
             if Settings.AutoRewardChests
                 and not self.RewardPassComplete
             then
-                self:SetStatus(
-                    "waiting for reward chest pass"
-                )
+                Settings.__RewardRoomBusy =
+                    true
+
+                self:HandlePostRunRewards()
 
                 return
             end
 
-            if Settings.AutoRewardChests
-                and self:HasActionableRewardChest()
-            then
-                self.RewardPassComplete =
+            if Settings.AutoLeaveDungeon then
+                if Settings.AutoRewardChests
+                    and not self.RewardPassComplete
+                then
+                    return
+                end
+
+                if Settings.AutoRewardChests then
+                    local FreeBeforeLeave =
+                        self:GetRewardChestPrompts()
+
+                    if #FreeBeforeLeave > 0
+                        or self:HasActionableRewardChest()
+                    then
+                        self.RewardPassComplete =
+                            false
+
+                        return
+                    end
+                end
+
+                if CollectibleInteractionBusy
+                    or LootMoveState.Busy
+                    or Settings.__LootFarmBusy
+                then
+                    self:SetStatus(
+                        "waiting for reward loot before leaving"
+                    )
+
+                    return
+                end
+
+                Settings.__RewardRoomBusy =
+                    true
+
+                local Left =
+                    self:LeaveRewardLobby()
+
+                Settings.__RewardRoomBusy =
                     false
+
+                if Left then
+                    self.RewardPassComplete =
+                        false
+
+                    self.PostRunPending =
+                        false
+                end
 
                 return
             end
-
-            Settings.__RewardRoomBusy =
-                true
-
-            self:SetStatus(
-                "reward room • auto leaving"
-            )
-
-            local Left =
-                self:LeaveRewardLobby()
-
-            Settings.__RewardRoomBusy =
-                false
-
-            if Left then
-                self.RewardPassComplete =
-                    false
-
-                self.PostRunPending =
-                    false
-
-                self.WasDungeonRunning =
-                    false
-            end
-
-            return
-        end
 
             Settings.__RewardRoomBusy =
                 false
@@ -19942,10 +25766,12 @@ function AutoOuwigaharaController:Step()
     end
 
     ----------------------------------------------------------
-    -- ACTIVE DUNGEON
+    -- 2) ACTIVE CLIMB
     ----------------------------------------------------------
 
-    if self:IsDungeonRunning() then
+    if State == "Climbing"
+        or self:IsDungeonRunning()
+    then
         self.WasDungeonRunning =
             true
 
@@ -19966,11 +25792,18 @@ function AutoOuwigaharaController:Step()
             false
 
         self:SetStatus(
-            "dungeon active • "
-                .. (
-                    FloorText ~= ""
-                    and FloorText
-                    or "floor running"
+            "dungeon active • state="
+                .. tostring(
+                    State
+                )
+                .. " • Hearts="
+                .. tostring(
+                    self:GetHearts()
+                    or "?"
+                )
+                .. " • RunPoints="
+                .. tostring(
+                    self:GetRunPoints()
                 )
         )
 
@@ -19983,7 +25816,7 @@ function AutoOuwigaharaController:Step()
         false
 
     ----------------------------------------------------------
-    -- AUTO OUWIGAHARA NORMAL ONLY CONTROLS QUEUE / READYUP.
+    -- 3) QUEUE / READYUP
     ----------------------------------------------------------
 
     if not Settings.AutoOuwigaharaNormal then
@@ -19992,10 +25825,6 @@ function AutoOuwigaharaController:Step()
 
         return
     end
-
-    ----------------------------------------------------------
-    -- PRE-RUN LOBBY
-    ----------------------------------------------------------
 
     local StartPad,
         ReadyUp =
@@ -20019,10 +25848,6 @@ function AutoOuwigaharaController:Step()
     Settings.__DungeonEntryBusy =
         false
 
-    ----------------------------------------------------------
-    -- MAIN MENU
-    ----------------------------------------------------------
-
     if self:IsMenuReadyForQueue() then
         self:QueueNormal()
 
@@ -20030,10 +25855,12 @@ function AutoOuwigaharaController:Step()
     end
 
     self:SetStatus(
-        "waiting for menu, lobby, or reward room"
+        "waiting • MinigameState="
+            .. tostring(
+                State
+            )
     )
 end
-
 
 function AutoOuwigaharaController:Start()
     if self.Running then
@@ -20475,7 +26302,7 @@ function AutoSkipWaveController:Step()
         Button
     )
     then
-        print(
+        HubDebug(
             "[Combat Hub] Auto Skip Wave pressed"
                 .. (
                     DisplayText
@@ -21519,7 +27346,7 @@ function AutoCardController:PressCard(
         self.LastClickAt =
             os.clock()
 
-        print(
+        HubDebug(
             "[Combat Hub] Card picked: "
                 .. tostring(
                     Entry.Title
@@ -21571,7 +27398,7 @@ function AutoCardController:LogOffer(
         )
     end
 
-    print(
+    HubDebug(
         "[Combat Hub] Card offer: "
             .. table.concat(
                 Names,
@@ -21811,7 +27638,7 @@ function AutoCardController:Step()
                 Signature
         end
     else
-        print(
+        HubDebug(
             "[Combat Hub] Auto Pick Cards: no eligible card found • Skip ignored"
         )
     end
@@ -21892,36 +27719,31 @@ function AutoCardController:Stop()
 end
 
 
-local QuestRow =
-    MainTab:CreateGroup()
+local DungeonRunRow =
+    DungeonTab:CreateGroup()
 
-QuestRow:CreateToggle({
-    name = "Auto Farm",
+DungeonRunRow:CreateToggle({
+    name = "Auto Join Ouwigahara Normal",
     value = false,
-    flag = "AutoFarm",
+    flag = "AutoOuwigaharaNormal",
 
     callback = function(Value)
-        Settings.AutoFarm =
+        Settings.AutoOuwigaharaNormal =
             Value
 
-        QuestFarmController:RefreshRunState()
+        AutoOuwigaharaController:RefreshRunState()
 
         Toast(
-            "Auto Farm",
+            "Auto Join Ouwigahara Normal",
             Value
-                and (
-                    "Farming "
-                    .. tostring(
-                        Settings.SelectedFarmMob
-                    )
-                )
+                and "Enabled • queue + lobby ReadyUp"
                 or "Disabled"
         )
     end,
 })
 
 
-QuestRow:CreateToggle({
+DungeonRunRow:CreateToggle({
     name = "Auto Farm Dungeon",
     value = false,
     flag = "AutoFarmDungeon",
@@ -21946,28 +27768,35 @@ QuestRow:CreateToggle({
 })
 
 
-QuestRow:CreateToggle({
-    name = "Auto Ouwigahara Normal",
+DungeonRunRow:CreateToggle({
+    name = "Auto Skip Wave",
     value = false,
-    flag = "AutoOuwigaharaNormal",
+    flag = "AutoSkipWave",
 
     callback = function(Value)
-        Settings.AutoOuwigaharaNormal =
-            Value
-
-        AutoOuwigaharaController:RefreshRunState()
+        if Value then
+            AutoSkipWaveController:Start()
+        else
+            AutoSkipWaveController:Stop()
+        end
 
         Toast(
-            "Auto Ouwigahara Normal",
+            "Auto Skip Wave",
             Value
-                and "Enabled • queue + lobby ReadyUp"
+                and "Enabled • automatically votes Skip when available"
                 or "Disabled"
         )
     end,
 })
 
 
-QuestRow:CreateToggle({
+
+DungeonTab:CreateDivider()
+
+local DungeonRewardRow =
+    DungeonTab:CreateGroup()
+
+DungeonRewardRow:CreateToggle({
     name = "Auto Reward Chests",
     value = false,
     flag = "AutoRewardChests",
@@ -21988,7 +27817,7 @@ QuestRow:CreateToggle({
                 Chest =
                 AutoOuwigaharaController:GetRewardModelState()
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Reward Chests enabled • Floor='"
                     .. tostring(
                         AutoOuwigaharaController:GetOuwigaharaFloorText()
@@ -22020,7 +27849,7 @@ QuestRow:CreateToggle({
 })
 
 
-QuestRow:CreateToggle({
+DungeonRewardRow:CreateToggle({
     name = "Auto Leave Dungeon",
     value = false,
     flag = "AutoLeaveDungeon",
@@ -22037,7 +27866,7 @@ QuestRow:CreateToggle({
             local LeavePad =
                 AutoOuwigaharaController:GetLeavePad()
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Leave Dungeon enabled • Floor='"
                     .. tostring(
                         AutoOuwigaharaController:GetOuwigaharaFloorText()
@@ -22073,7 +27902,13 @@ QuestRow:CreateToggle({
 })
 
 
-QuestRow:CreateToggle({
+
+DungeonTab:CreateDivider()
+
+local DungeonSafetyRow =
+    DungeonTab:CreateGroup()
+
+DungeonSafetyRow:CreateToggle({
     name = "Auto Die at X Points",
     value = false,
     flag = "AutoDieAtPoints",
@@ -22086,7 +27921,7 @@ QuestRow:CreateToggle({
             AutoOuwigaharaController.AutoDieTriggeredThisRun =
                 false
 
-            print(
+            HubDebug(
                 "[Combat Hub] Auto Die at X Points enabled • threshold="
                     .. tostring(
                         Settings.DieAtPoints
@@ -22119,9 +27954,8 @@ QuestRow:CreateToggle({
 })
 
 
-MainTab:CreateInput({
+DungeonTab:CreateInput({
     name = "Die At Points",
-    description = "Point threshold for Auto Die at X Points. Triggers once per active Ouwigahara run.",
     placeholder = "30000",
     value = "30000",
     numeric = true,
@@ -22161,57 +27995,11 @@ MainTab:CreateInput({
 })
 
 
-QuestRow:CreateToggle({
-    name = "Auto Skip Wave",
-    value = false,
-    flag = "AutoSkipWave",
 
-    callback = function(Value)
-        if Value then
-            AutoSkipWaveController:Start()
-        else
-            AutoSkipWaveController:Stop()
-        end
+DungeonTab:CreateDivider()
 
-        Toast(
-            "Auto Skip Wave",
-            Value
-                and "Enabled • automatically votes Skip when available"
-                or "Disabled"
-        )
-    end,
-})
-
-
-QuestRow:CreateToggle({
-    name = "Auto Pick Cards",
-    value = false,
-    flag = "AutoPickBestCards",
-
-    callback = function(Value)
-        Settings.AutoPickBestCards =
-            Value
-
-        AutoCardController:RefreshRunState()
-
-        Toast(
-            "Auto Pick Cards",
-            Value
-                and (
-                    "Enabled • "
-                    .. tostring(
-                        Settings.CardPickMode
-                    )
-                )
-                or "Disabled"
-        )
-    end,
-})
-
-
-MainTab:CreateDropdown({
+DungeonTab:CreateDropdown({
     name = "Card Priority",
-    description = "Used by Auto Pick Cards: More Points, balanced Best Cards, or character-focused upgrades.",
     options = {
         "More Points",
         "Best Cards",
@@ -22244,7 +28032,37 @@ MainTab:CreateDropdown({
 })
 
 
-QuestRow:CreateToggle({
+
+local DungeonCardRow =
+    DungeonTab:CreateGroup()
+
+DungeonCardRow:CreateToggle({
+    name = "Auto Pick Cards",
+    value = false,
+    flag = "AutoPickBestCards",
+
+    callback = function(Value)
+        Settings.AutoPickBestCards =
+            Value
+
+        AutoCardController:RefreshRunState()
+
+        Toast(
+            "Auto Pick Cards",
+            Value
+                and (
+                    "Enabled • "
+                    .. tostring(
+                        Settings.CardPickMode
+                    )
+                )
+                or "Disabled"
+        )
+    end,
+})
+
+
+DungeonCardRow:CreateToggle({
     name = "Auto Second Wind",
     value = false,
     flag = "AutoSecondWind",
@@ -22271,7 +28089,7 @@ QuestRow:CreateToggle({
 })
 
 
-QuestRow:CreateSlider({
+DungeonTab:CreateSlider({
     name = "Second Wind HP",
     range = {
         10,
@@ -22295,51 +28113,6 @@ QuestRow:CreateSlider({
     end,
 })
 
-
-QuestRow:CreateToggle({
-    name = "Auto Quest",
-    value = false,
-    flag = "AutoQuest",
-
-    callback = function(Value)
-        Settings.AutoQuest =
-            Value
-
-        if Value then
-            QuestController:Start()
-        else
-            QuestController:Stop()
-        end
-
-        Toast(
-            "Auto Quest",
-            Value
-                and "Enabled"
-                or "Disabled"
-        )
-    end,
-})
-
-
-QuestRow:CreateToggle({
-    name = "Auto Farm Quest",
-    value = false,
-    flag = "AutoFarmQuest",
-
-    callback = function(Value)
-        Settings.AutoFarmQuest =
-            Value
-
-        QuestFarmController:RefreshRunState()
-
-        Toast(
-            "Auto Farm Quest",
-            Value
-                and "Enabled"
-                or "Disabled"
-        )
-    end,
-})
 
 
 --// ============================================================
@@ -22671,7 +28444,6 @@ end
 local PlayerMovementGroup =
     PlayerTab:CreateGroup()
 
-
 PlayerMovementGroup:CreateToggle({
     name = "Fly",
     value = false,
@@ -22690,31 +28462,6 @@ PlayerMovementGroup:CreateToggle({
                 and "Enabled • Space/E up • Ctrl/Q down"
                 or "Disabled"
         )
-    end,
-})
-
-
-PlayerMovementGroup:CreateToggle({
-    name = "Anti Ragdoll",
-    value = false,
-    flag = "AntiRagdoll",
-
-    callback = function(Value)
-        if Value then
-            AntiRagdollController:Start()
-
-            Toast(
-                "Anti Ragdoll",
-                "Enabled"
-            )
-        else
-            AntiRagdollController:Stop()
-
-            Toast(
-                "Anti Ragdoll",
-                "Disabled"
-            )
-        end
     end,
 })
 
@@ -22765,20 +28512,38 @@ PlayerMovementGroup:CreateSlider({
 })
 
 
-local SettingsRow =
-    SettingsTab:CreateGroup()
 
-SettingsRow:CreateToggle({
-    name = "Anti AFK",
-    value = true,
-    flag = "AntiAFK",
+PlayerTab:CreateDivider()
+
+local PlayerSafetyGroup =
+    PlayerTab:CreateGroup()
+
+PlayerSafetyGroup:CreateToggle({
+    name = "Anti Ragdoll",
+    value = false,
+    flag = "AntiRagdoll",
 
     callback = function(Value)
-        Settings.AntiAFK = Value
+        if Value then
+            AntiRagdollController:Start()
+
+            Toast(
+                "Anti Ragdoll",
+                "Enabled"
+            )
+        else
+            AntiRagdollController:Stop()
+
+            Toast(
+                "Anti Ragdoll",
+                "Disabled"
+            )
+        end
     end,
 })
 
-SettingsRow:CreateToggle({
+
+PlayerSafetyGroup:CreateToggle({
     name = "Anti Sun Damage",
     value = false,
     flag = "AntiSunDamage",
@@ -22802,6 +28567,19 @@ SettingsRow:CreateToggle({
     end,
 })
 
+local SettingsRow =
+    SettingsTab:CreateGroup()
+
+SettingsRow:CreateToggle({
+    name = "Anti AFK",
+    value = true,
+    flag = "AntiAFK",
+
+    callback = function(Value)
+        Settings.AntiAFK = Value
+    end,
+})
+
 local function UnloadHub()
     if not HubRunning then
         return
@@ -22812,6 +28590,7 @@ local function UnloadHub()
     StopAutoClick()
     AutoBlockController:Stop()
     AutoSkillController:Stop()
+    AutoBestEquipmentController:Stop()
     StopAutoOpenChest()
     RaidController:Stop()
     AutoSellController:Stop()
@@ -22831,8 +28610,16 @@ local function UnloadHub()
     end
 
     Settings.AutoSkills = false
+    Settings.AutoEquipBestEquipment = false
     Settings.AutoFarm = false
+    Settings.AutoFarmBoss = false
     Settings.AutoFarmDungeon = false
+
+    Settings.__LootAggroCleanup = false
+    Settings.__BossRewardBusy = false
+    Settings.__BossRewardCollecting = false
+    Settings.__BossLootCenter = nil
+    Settings.__BossLootRadius = nil
     Settings.AutoRewardChests = false
     Settings.AutoLeaveDungeon = false
     Settings.AutoDieAtPoints = false
@@ -22886,6 +28673,6 @@ SettingsTab:CreateButton({
 })
 
 Toast(
-    "Combat Hub",
-    "Combat + Raid + Loot/Souls + Auto Sell Coins + Quests ready"
+    "HollowMoonHub",
+    "Ready"
 )
