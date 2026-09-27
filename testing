@@ -20015,8 +20015,9 @@ end
 --   * Skills_Provider resolves the real skill assigned to each selected key.
 --   * Skills_Module.Can_Skill filters cooldown/stamina/aura/mode requirements.
 --   * SHC is watched to confirm the skill actually started and finished.
---   * Max_Hold uses the game's own ~0.25s completion margin.
---   * Skills with internal wind-up but no Max_Hold are held until SHC clears.
+--   * Max_Hold / explicit hold metadata marks a real hold/charge skill.
+--   * Skills without hold metadata are tapped and released immediately.
+--   * SHC is still watched AFTER release so taps do not overlap incorrectly.
 --   * Round-robin skips unavailable/cooldown skills and advances immediately.
 
 local AutoSkillController = {
@@ -20055,13 +20056,17 @@ local AutoSkillController = {
     LastAttempt = {},
     RetryDelay = 0.30,
 
-    -- Smart timing values. The game exposes actual skill state through SHC,
-    -- so Auto Skills waits for the skill to really start instead of blindly
-    -- sleeping after VirtualPress.
+    -- Smart timing values.
+    --
+    -- IMPORTANT:
+    -- Non-hold skills are TAP-RELEASED immediately. SHC staying active after
+    -- the tap only means the skill is still executing; it does NOT mean the
+    -- physical key should remain held.
     SkillStartTimeout = 0.40,
     NaturalSkillTimeout = 3.50,
     HoldSafetyMargin = 0.25,
-    TapReleaseDelay = 0.06,
+    TapReleaseDelay = 0.055,
+    TapTransitionTimeout = 0.45,
 
     -- Round-robin cursor. After one selected skill successfully casts,
     -- the next pass starts from the following selected key instead of
@@ -20923,6 +20928,166 @@ function AutoSkillController:GetMaxHold(
 end
 
 
+function AutoSkillController:ShouldHoldSkill(
+    Skill
+)
+    if type(
+        Skill
+    ) ~= "table"
+    then
+        return false,
+            0
+    end
+
+    local MaxHold =
+        self:GetMaxHold(
+            Skill
+        )
+
+    if MaxHold > 0 then
+        return true,
+            MaxHold
+    end
+
+    ----------------------------------------------------------
+    -- Some skill definitions may expose hold/charge intent with a
+    -- boolean instead of Max_Hold. Support the common field variants
+    -- without assuming every active SHC skill should be held.
+    ----------------------------------------------------------
+
+    local BooleanFields = {
+        "Hold",
+        "Held",
+        "Holdable",
+        "CanHold",
+        "Can_Hold",
+        "RequiresHold",
+        "Requires_Hold",
+        "Charge",
+        "Chargeable",
+        "CanCharge",
+        "Can_Charge",
+    }
+
+    for _,
+        Field in ipairs(
+            BooleanFields
+        )
+    do
+        if Skill[
+            Field
+        ] == true
+        then
+            return true,
+                0
+        end
+    end
+
+    ----------------------------------------------------------
+    -- String metadata fallback.
+    ----------------------------------------------------------
+
+    local StringFields = {
+        "InputType",
+        "Input_Type",
+        "ActivationType",
+        "Activation_Type",
+        "CastType",
+        "Cast_Type",
+        "SkillType",
+        "Skill_Type",
+        "Type",
+    }
+
+    for _,
+        Field in ipairs(
+            StringFields
+        )
+    do
+        local Value =
+            Skill[
+                Field
+            ]
+
+        if type(
+            Value
+        ) == "string"
+        then
+            local Lower =
+                string.lower(
+                    Value
+                )
+
+            if string.find(
+                Lower,
+                "hold",
+                1,
+                true
+            )
+                or string.find(
+                    Lower,
+                    "charge",
+                    1,
+                    true
+                )
+            then
+                return true,
+                    0
+            end
+        end
+    end
+
+    return false,
+        0
+end
+
+
+function AutoSkillController:WaitAfterTap(
+    SkillName
+)
+    local StartedAt =
+        os.clock()
+
+    local SawActive =
+        false
+
+    while HubRunning
+        and Settings.AutoSkills
+        and self:IsCharacterAlive()
+        and os.clock()
+            - StartedAt
+            < self.TapTransitionTimeout
+    do
+        local Current =
+            self:GetCurrentSkillName()
+
+        if Current
+            == SkillName
+        then
+            SawActive =
+                true
+        elseif SawActive then
+            return "tap-finished"
+        end
+
+        if self:IsCooldownActive(
+            SkillName
+        )
+        then
+            return "tap-cooldown"
+        end
+
+        task.wait(
+            0.01
+        )
+    end
+
+    return SawActive
+        and "tap-active"
+        or "tap"
+end
+
+
 function AutoSkillController:WaitForSkillStart(
     SkillName,
     Timeout,
@@ -21227,13 +21392,70 @@ function AutoSkillController:UseSelectedKey(
     ] =
         os.clock()
 
-    local MaxHold =
-        self:GetMaxHold(
+    local ShouldHold,
+        MaxHold =
+        self:ShouldHoldSkill(
             Skill
         )
 
-    -- Keep the controller's own max in sync with the exact value the HUD
-    -- uses. VirtualPress will still run the game's normal Attempt_Hold path.
+    ----------------------------------------------------------
+    -- TAP SKILL
+    --
+    -- Normal skills should never remain physically held just because SHC
+    -- stays active while their animation/effect runs.
+    ----------------------------------------------------------
+
+    if not ShouldHold then
+        local PressOk =
+            pcall(
+                self.InputHandler.VirtualPress,
+                ActionName
+            )
+
+        if not PressOk then
+            return false
+        end
+
+        task.wait(
+            self.TapReleaseDelay
+        )
+
+        pcall(
+            self.InputHandler.VirtualRelease,
+            ActionName
+        )
+
+        local FinishReason =
+            self:WaitAfterTap(
+                SkillName
+            )
+
+        HubDebug(
+            "[Combat Hub] Auto Skills: "
+                .. tostring(
+                    KeyName
+                )
+                .. " → "
+                .. tostring(
+                    SkillName
+                )
+                .. " | "
+                .. tostring(
+                    FinishReason
+                )
+        )
+
+        task.wait(
+            0.035
+        )
+
+        return true
+    end
+
+    ----------------------------------------------------------
+    -- CONFIRMED HOLD / CHARGE SKILL
+    ----------------------------------------------------------
+
     if self.SkillController
         and MaxHold > 0
     then
@@ -21258,17 +21480,17 @@ function AutoSkillController:UseSelectedKey(
         self:WaitForSkillStart(
             SkillName,
             self.SkillStartTimeout,
-            MaxHold <= 0
+            false
         )
 
     local HeldFor =
         0
 
     local FinishReason =
-        "tap"
+        "hold-start-not-observed"
 
-    if MaxHold > 0
-        and Started
+    if Started
+        and MaxHold > 0
     then
         HeldFor,
             FinishReason =
@@ -21277,13 +21499,18 @@ function AutoSkillController:UseSelectedKey(
                 MaxHold,
                 SHC
             )
+
     elseif Started then
+        -- Explicit hold metadata without Max_Hold:
+        -- keep the input down only while the game's active skill state says
+        -- this confirmed hold skill is still executing.
         HeldFor,
             FinishReason =
             self:WaitNaturalSkill(
                 SkillName,
                 SHC
             )
+
     else
         task.wait(
             self.TapReleaseDelay
@@ -21291,9 +21518,6 @@ function AutoSkillController:UseSelectedKey(
 
         HeldFor =
             self.TapReleaseDelay
-
-        FinishReason =
-            "start-not-observed"
     end
 
     pcall(
@@ -21301,8 +21525,6 @@ function AutoSkillController:UseSelectedKey(
         ActionName
     )
 
-    -- Give SHC / cooldown state one short transition window before the next
-    -- round-robin skill is considered.
     local TransitionStarted =
         os.clock()
 
@@ -21351,7 +21573,6 @@ function AutoSkillController:UseSelectedKey(
 
     return true
 end
-
 
 function AutoSkillController:Step()
     if not HubRunning
