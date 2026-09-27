@@ -440,6 +440,10 @@ local Settings = {
     AutoSkills = false,
     AutoSkillKeys = {},
 
+    -- Optional manual override for physical keys whose current skill
+    -- genuinely gains extra damage/animations/ticks from being held.
+    AutoSkillHoldKeys = {},
+
     AutoOpenChest = false,
     AutoRaidChest = false,
 
@@ -4341,7 +4345,14 @@ end
 local AutoClickNearbyCache = {
     CheckedAt = 0,
     Result = false,
-    Interval = 0.08,
+
+    -- 20 ms detection cadence.
+    Interval = 0.02,
+
+    -- Full hierarchy fallback stays throttled; spatial detection handles
+    -- normal cases much faster.
+    FallbackScanAt = 0,
+    FallbackScanInterval = 0.20,
 }
 
 
@@ -4420,8 +4431,55 @@ local function HasNearbyEnemyForAutoClick()
             80
         )
 
+    local function IsValidEnemyModel(
+        Model
+    )
+        if not Model
+            or not Model.Parent
+            or not Model:IsA(
+                "Model"
+            )
+            or Model == Character
+            or Players:GetPlayerFromCharacter(
+                Model
+            )
+        then
+            return false
+        end
+
+        local EnemyHumanoid =
+            Model:FindFirstChildOfClass(
+                "Humanoid"
+            )
+            or Model:FindFirstChildWhichIsA(
+                "Humanoid",
+                true
+            )
+
+        if not EnemyHumanoid
+            or EnemyHumanoid.Health <= 0
+        then
+            return false
+        end
+
+        local EnemyRoot =
+            GetAutoClickEnemyRoot(
+                Model
+            )
+
+        if not EnemyRoot then
+            return false
+        end
+
+        return (
+            EnemyRoot.Position
+            - Root.Position
+        ).Magnitude
+            <= Range
+    end
+
     ----------------------------------------------------------
-    -- First check NPCs explicitly following / aggroed to us.
+    -- 1) Immediate aggro/following targets.
     ----------------------------------------------------------
 
     local Following =
@@ -4439,33 +4497,88 @@ local function HasNearbyEnemyForAutoClick()
                 "ObjectValue"
             )
                 and ValueObject.Value
-            then
-                local Model =
+                and IsValidEnemyModel(
                     ValueObject.Value
-
-                if Model:IsA(
-                    "Model"
                 )
+            then
+                AutoClickNearbyCache.Result =
+                    true
+
+                return true
+            end
+        end
+    end
+
+    ----------------------------------------------------------
+    -- 2) Fast spatial radius query.
+    ----------------------------------------------------------
+
+    local HumanoidsFolder =
+        workspace:FindFirstChild(
+            "Humanoids"
+        )
+
+    if HumanoidsFolder then
+        local Params =
+            OverlapParams.new()
+
+        Params.FilterType =
+            Enum.RaycastFilterType.Include
+
+        Params.FilterDescendantsInstances = {
+            HumanoidsFolder,
+        }
+
+        Params.MaxParts =
+            128
+
+        local Success,
+            Parts =
+            pcall(
+                workspace.GetPartBoundsInRadius,
+                workspace,
+                Root.Position,
+                Range,
+                Params
+            )
+
+        if Success
+            and type(
+                Parts
+            ) == "table"
+        then
+            local Seen =
+                {}
+
+            for _,
+                Part in ipairs(
+                    Parts
+                )
+            do
+                local Model =
+                    Part:FindFirstAncestorOfClass(
+                        "Model"
+                    )
+
+                if Model
+                    and not Seen[
+                        Model
+                    ]
                 then
-                    local EnemyHumanoid =
-                        Model:FindFirstChildWhichIsA(
-                            "Humanoid",
-                            true
+                    Seen[
+                        Model
+                    ] =
+                        true
+
+                    local ActiveNpcs =
+                        Model:FindFirstAncestor(
+                            "ActiveNpcs"
                         )
 
-                    local EnemyRoot =
-                        GetAutoClickEnemyRoot(
+                    if ActiveNpcs
+                        and IsValidEnemyModel(
                             Model
                         )
-
-                    if EnemyHumanoid
-                        and EnemyHumanoid.Health > 0
-                        and EnemyRoot
-                        and (
-                            EnemyRoot.Position
-                            - Root.Position
-                        ).Magnitude
-                            <= Range
                     then
                         AutoClickNearbyCache.Result =
                             true
@@ -4478,60 +4591,44 @@ local function HasNearbyEnemyForAutoClick()
     end
 
     ----------------------------------------------------------
-    -- Then scan any live NPC under an ActiveNpcs folder.
+    -- 3) Slower hierarchy fallback for unusual rigs.
     ----------------------------------------------------------
 
-    local HumanoidsFolder =
-        workspace:FindFirstChild(
-            "Humanoids"
-        )
+    if HumanoidsFolder
+        and Now
+            - AutoClickNearbyCache.FallbackScanAt
+            >= AutoClickNearbyCache.FallbackScanInterval
+    then
+        AutoClickNearbyCache.FallbackScanAt =
+            Now
 
-    if not HumanoidsFolder then
-        AutoClickNearbyCache.Result =
-            false
-
-        return false
-    end
-
-    for _,
-        EnemyHumanoid in ipairs(
-            HumanoidsFolder:GetDescendants()
-        )
-    do
-        if EnemyHumanoid:IsA(
-            "Humanoid"
-        )
-            and EnemyHumanoid.Health > 0
-        then
-            local Model =
-                EnemyHumanoid.Parent
-
-            if Model
-                and Model:IsA(
-                    "Model"
-                )
-                and Model ~= Character
-                and not Players:GetPlayerFromCharacter(
-                    Model
-                )
+        for _,
+            EnemyHumanoid in ipairs(
+                HumanoidsFolder:GetDescendants()
+            )
+        do
+            if EnemyHumanoid:IsA(
+                "Humanoid"
+            )
+                and EnemyHumanoid.Health > 0
             then
-                local ActiveNpcs =
-                    Model:FindFirstAncestor(
-                        "ActiveNpcs"
-                    )
+                local Model =
+                    EnemyHumanoid.Parent
 
-                if ActiveNpcs then
-                    local EnemyRoot =
-                        GetAutoClickEnemyRoot(
-                            Model
+                if Model
+                    and Model:IsA(
+                        "Model"
+                    )
+                then
+                    local ActiveNpcs =
+                        Model:FindFirstAncestor(
+                            "ActiveNpcs"
                         )
 
-                    if EnemyRoot
-                        and (
-                            EnemyRoot.Position
-                            - Root.Position
-                        ).Magnitude
-                            <= Range
+                    if ActiveNpcs
+                        and IsValidEnemyModel(
+                            Model
+                        )
                     then
                         AutoClickNearbyCache.Result =
                             true
@@ -4548,7 +4645,6 @@ local function HasNearbyEnemyForAutoClick()
 
     return false
 end
-
 
 local function StartAutoClick()
     AutoClickLoopID +=
@@ -4576,7 +4672,7 @@ local function StartAutoClick()
             if not HasNearbyEnemyForAutoClick()
             then
                 task.wait(
-                    0.05
+                    0.02
                 )
 
                 continue
@@ -21265,8 +21361,210 @@ function AutoSkillController:GetMaxHold(
 end
 
 
+function AutoSkillController:IsHoldKeyForced(
+    KeyName
+)
+    if type(
+        Settings.AutoSkillHoldKeys
+    ) ~= "table"
+    then
+        return false
+    end
+
+    if Settings.AutoSkillHoldKeys[
+        KeyName
+    ] == true
+    then
+        return true
+    end
+
+    for _,
+        Value in ipairs(
+            Settings.AutoSkillHoldKeys
+        )
+    do
+        if tostring(
+            Value
+        ) == tostring(
+            KeyName
+        )
+        then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+function AutoSkillController:TableSuggestsHoldDamageBenefit(
+    Value,
+    Depth,
+    Seen
+)
+    if type(
+        Value
+    ) ~= "table"
+    then
+        return false
+    end
+
+    Depth =
+        tonumber(
+            Depth
+        )
+        or 0
+
+    if Depth > 4 then
+        return false
+    end
+
+    Seen =
+        Seen
+        or {}
+
+    if Seen[
+        Value
+    ] then
+        return false
+    end
+
+    Seen[
+        Value
+    ] =
+        true
+
+    local HoldEvidence =
+        false
+
+    local DamageEvidence =
+        false
+
+    local MultiStageEvidence =
+        false
+
+    local NumericChildren =
+        0
+
+    for Key,
+        Child in pairs(
+            Value
+        )
+    do
+        local KeyText =
+            string.lower(
+                tostring(
+                    Key
+                )
+            )
+
+        if string.find(
+            KeyText,
+            "charge",
+            1,
+            true
+        )
+            or string.find(
+                KeyText,
+                "hold",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "release",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "stage",
+                1,
+                true
+            )
+        then
+            HoldEvidence =
+                true
+        end
+
+        if string.find(
+            KeyText,
+            "damage",
+            1,
+            true
+        )
+            or string.find(
+                KeyText,
+                "dmg",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "hit",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "multiplier",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "animation",
+                1,
+                true
+            )
+            or string.find(
+                KeyText,
+                "anim",
+                1,
+                true
+            )
+        then
+            DamageEvidence =
+                true
+        end
+
+        if type(
+            Key
+        ) == "number"
+        then
+            NumericChildren +=
+                1
+
+            if NumericChildren >= 2 then
+                MultiStageEvidence =
+                    true
+            end
+        end
+
+        if type(
+            Child
+        ) == "table"
+            and self:TableSuggestsHoldDamageBenefit(
+                Child,
+                Depth + 1,
+                Seen
+            )
+        then
+            return true
+        end
+    end
+
+    return HoldEvidence
+        and (
+            DamageEvidence
+            or MultiStageEvidence
+        )
+end
+
+
 function AutoSkillController:ShouldHoldSkill(
-    Skill
+    Skill,
+    KeyName
 )
     if type(
         Skill
@@ -21276,36 +21574,26 @@ function AutoSkillController:ShouldHoldSkill(
             0
     end
 
-    local SkillName =
-        tostring(
-            Skill.Name
-            or ""
+    local MaxHold =
+        self:GetMaxHold(
+            Skill
         )
 
     ----------------------------------------------------------
-    -- MANUAL OVERRIDE
-    --
-    -- Keep this empty unless a particular skill is confirmed to actually
-    -- gain extra attacks/ticks/effect from remaining held.
+    -- MANUAL PHYSICAL-KEY OVERRIDE
     ----------------------------------------------------------
 
-    if SkillName ~= ""
-        and self.ForceHoldSkills[
-            SkillName
-        ] == true
+    if KeyName
+        and self:IsHoldKeyForced(
+            KeyName
+        )
     then
         return true,
-            self:GetMaxHold(
-                Skill
-            )
+            MaxHold
     end
 
     ----------------------------------------------------------
-    -- IMPORTANT:
-    --
-    -- Max_Hold / Hold / Holdable / CanHold only tell us that the input CAN
-    -- remain held. They do NOT prove that holding produces additional damage
-    -- or repeated attacks, so those fields are intentionally ignored here.
+    -- Strong explicit continuous / repeat metadata.
     ----------------------------------------------------------
 
     local ContinuousBooleanFields = {
@@ -21344,18 +21632,32 @@ function AutoSkillController:ShouldHoldSkill(
         ] == true
         then
             return true,
-                self:GetMaxHold(
-                    Skill
-                )
+                MaxHold
         end
     end
 
     ----------------------------------------------------------
-    -- String metadata fallback.
+    -- Max_Hold + staged damage/hit/animation metadata.
     --
-    -- Only strongly continuous words qualify. Generic "hold" / "charge"
-    -- wording is intentionally NOT enough because the user's tested skill
-    -- can be held but performs the same one-shot attack when released.
+    -- Max_Hold by itself still does NOT force a hold, because some skills
+    -- merely allow holding without gaining anything. But Max_Hold together
+    -- with charge/hold stages that contain damage/hit/animation progression
+    -- is treated as a real damaging hold skill.
+    ----------------------------------------------------------
+
+    if MaxHold > 0
+        and self:TableSuggestsHoldDamageBenefit(
+            Skill,
+            0,
+            {}
+        )
+    then
+        return true,
+            MaxHold
+    end
+
+    ----------------------------------------------------------
+    -- String metadata for continuous/channel/repeat modes.
     ----------------------------------------------------------
 
     local StringFields = {
@@ -21416,18 +21718,11 @@ function AutoSkillController:ShouldHoldSkill(
                 )
                 then
                     return true,
-                        self:GetMaxHold(
-                            Skill
-                        )
+                        MaxHold
                 end
             end
         end
     end
-
-    ----------------------------------------------------------
-    -- DEFAULT:
-    -- TAP ONCE.
-    ----------------------------------------------------------
 
     return false,
         0
@@ -21786,7 +22081,8 @@ function AutoSkillController:UseSelectedKey(
     local ShouldHold,
         MaxHold =
         self:ShouldHoldSkill(
-            Skill
+            Skill,
+            KeyName
         )
 
     ----------------------------------------------------------
@@ -22343,6 +22639,32 @@ MainTab:CreateDropdown({
                     or "No skills selected"
             )
         end
+    end,
+})
+
+
+MainTab:CreateDropdown({
+    name = "Hold Skill Keys",
+    options = {
+        "Z",
+        "X",
+        "C",
+        "V",
+        "B",
+        "N",
+        "K",
+    },
+    value = {},
+    multiSelect = true,
+    flag = "AutoSkillHoldKeys",
+
+    callback = function(Value)
+        Settings.AutoSkillHoldKeys =
+            type(
+                Value
+            ) == "table"
+            and Value
+            or {}
     end,
 })
 
@@ -23014,6 +23336,14 @@ local AutoOuwigaharaController = {
     -- for this entire window.
     FreeChestEmptyConfirmTime = 2.25,
 
+    -- A successful local prompt call is NOT treated as an opened cache.
+    -- Confirm the cache actually opened/disappeared/disabled first.
+    FreeChestOpenConfirmWait = 2.75,
+
+    -- Keep retrying missing / late free caches for a while before allowing
+    -- the reward state to advance.
+    FreeChestRetryMaxWait = 35,
+
     -- Reward drops can appear after the chest prompt disappears. Give the
     -- first drop time to spawn, then require a quiet period after the last
     -- collected prompt before moving on.
@@ -23030,7 +23360,13 @@ local AutoOuwigaharaController = {
     PaidResealSeconds = 6.25,
     PaidPromptRespawnWait = 7.50,
 
-    LeavePromptWait = 6,
+    -- If we can still afford the 30k chest, do not mark rewards finished
+    -- just because its prompt is temporarily missing/disabled.
+    PaidAcquireRetryWindow = 20,
+    PaidTriggerRetryLimit = 8,
+
+    LeavePromptWait = 8,
+    LeaveTriggerRetries = 6,
     LeaveCooldownUntil = 0,
 
     -- Auto Die at X Points state.
@@ -24782,6 +25118,130 @@ function AutoOuwigaharaController:GetChestContainer(
 end
 
 
+function AutoOuwigaharaController:IsRewardChestOpen(
+    Container,
+    Prompt
+)
+    -- Destroyed/replaced chest after an interaction counts as opened.
+    if Container
+        and not Container.Parent
+    then
+        return true
+    end
+
+    if Container then
+        if Container:GetAttribute(
+            "IsOpen"
+        ) == true
+        then
+            return true
+        end
+
+        local State =
+            string.lower(
+                tostring(
+                    Container:GetAttribute(
+                        "ChestState"
+                    )
+                    or Container:GetAttribute(
+                        "State"
+                    )
+                    or ""
+                )
+            )
+
+        if State == "opened"
+            or State == "despawned"
+        then
+            return true
+        end
+    end
+
+    -- Chest prompts normally disable/disappear after the server accepts
+    -- the open. This is a stronger confirmation than pcall succeeding.
+    if not Prompt
+        or not Prompt.Parent
+        or not Prompt.Enabled
+    then
+        return true
+    end
+
+    return false
+end
+
+
+function AutoOuwigaharaController:WaitForRewardChestOpened(
+    Prompt,
+    Container,
+    Timeout
+)
+    Timeout =
+        tonumber(
+            Timeout
+        )
+        or self.FreeChestOpenConfirmWait
+
+    local StartedAt =
+        os.clock()
+
+    while HubRunning
+        and Settings.AutoRewardChests
+        and os.clock()
+            - StartedAt
+            < Timeout
+    do
+        if self:IsRewardChestOpen(
+            Container,
+            Prompt
+        )
+        then
+            return true
+        end
+
+        task.wait(
+            0.08
+        )
+    end
+
+    return self:IsRewardChestOpen(
+        Container,
+        Prompt
+    )
+end
+
+
+function AutoOuwigaharaController:TriggerAndConfirmRewardChest(
+    Prompt,
+    Timeout
+)
+    if not Prompt
+        or not Prompt.Parent
+    then
+        return false
+    end
+
+    local Container =
+        self:GetChestContainer(
+            Prompt
+        )
+
+    local Triggered =
+        self:TriggerWorldPrompt(
+            Prompt
+        )
+
+    if not Triggered then
+        return false
+    end
+
+    return self:WaitForRewardChestOpened(
+        Prompt,
+        Container,
+        Timeout
+    )
+end
+
+
 function AutoOuwigaharaController:GetRewardChestPrompts()
     local Free =
         {}
@@ -24805,26 +25265,41 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
     local function AddFree(
         Prompt
     )
-        if Prompt
-            and Prompt.Parent
-            and Prompt:IsA(
+        if not Prompt
+            or not Prompt.Parent
+            or not Prompt:IsA(
                 "ProximityPrompt"
             )
-            and Prompt.Enabled
-            and not Seen[
+            or not Prompt.Enabled
+            or Seen[
                 Prompt
             ]
         then
-            Seen[
-                Prompt
-            ] =
-                true
+            return
+        end
 
-            table.insert(
-                Free,
+        local Container =
+            self:GetChestContainer(
                 Prompt
             )
+
+        if self:IsRewardChestOpen(
+            Container,
+            Prompt
+        )
+        then
+            return
         end
+
+        Seen[
+            Prompt
+        ] =
+            true
+
+        table.insert(
+            Free,
+            Prompt
+        )
     end
 
     local function AddPaid(
@@ -24840,6 +25315,17 @@ function AutoOuwigaharaController:GetRewardChestPrompts()
             or Seen[
                 Prompt
             ]
+        then
+            return
+        end
+
+        if self:IsRewardChestOpen(
+            Container
+            or self:GetChestContainer(
+                Prompt
+            ),
+            Prompt
+        )
         then
             return
         end
@@ -25157,6 +25643,36 @@ function AutoOuwigaharaController:WaitForPaidRewardPrompt(
             return Paid[1]
         end
 
+        -- If the model exists but its prompt is still resealing/streaming,
+        -- keep its area loaded instead of immediately abandoning the paid
+        -- chest path.
+        local PaidModel =
+            self:GetExactRewardModel(
+                "Ouwigahara Chest"
+            )
+
+        if PaidModel
+            and PaidModel.Parent
+        then
+            local Root =
+                PaidModel:FindFirstChild(
+                    "RootPart"
+                )
+                or PaidModel.PrimaryPart
+                or PaidModel:FindFirstChildWhichIsA(
+                    "BasePart",
+                    true
+                )
+
+            if Root then
+                pcall(function()
+                    workspace:RequestStreamAroundAsync(
+                        Root.Position
+                    )
+                end)
+            end
+        end
+
         task.wait(
             0.10
         )
@@ -25164,7 +25680,6 @@ function AutoOuwigaharaController:WaitForPaidRewardPrompt(
 
     return nil
 end
-
 
 function AutoOuwigaharaController:IsRewardRoomAvailable()
     if self:IsInRewardShops() then
@@ -25610,7 +26125,8 @@ function AutoOuwigaharaController:GetLeavePad()
     local LeavePad =
         Shops
         and Shops:FindFirstChild(
-            "LeavePad"
+            "LeavePad",
+            true
         )
 
     if not LeavePad
@@ -25624,7 +26140,8 @@ function AutoOuwigaharaController:GetLeavePad()
 
     local Prompt =
         LeavePad:FindFirstChild(
-            "Ouwigahara"
+            "Ouwigahara",
+            true
         )
 
     if Prompt
@@ -25636,10 +26153,41 @@ function AutoOuwigaharaController:GetLeavePad()
             nil
     end
 
+    if not Prompt then
+        for _,
+            Object in ipairs(
+                LeavePad:GetDescendants()
+            )
+        do
+            if Object:IsA(
+                "ProximityPrompt"
+            )
+                and (
+                    string.lower(
+                        tostring(
+                            Object.ObjectText
+                            or ""
+                        )
+                    ) == "ouwigahara"
+                    or string.lower(
+                        tostring(
+                            Object.ActionText
+                            or ""
+                        )
+                    ) == "leave"
+                )
+            then
+                Prompt =
+                    Object
+
+                break
+            end
+        end
+    end
+
     return LeavePad,
         Prompt
 end
-
 
 function AutoOuwigaharaController:LeaveRewardLobby()
     local Character,
@@ -25654,12 +26202,12 @@ function AutoOuwigaharaController:LeaveRewardLobby()
         return false
     end
 
+    local StartedAt =
+        os.clock()
+
     local LeavePad,
         Prompt =
         self:GetLeavePad()
-
-    local StartedAt =
-        os.clock()
 
     while HubRunning
         and self:IsRewardAutomationEnabled()
@@ -25676,11 +26224,13 @@ function AutoOuwigaharaController:LeaveRewardLobby()
             self:GetLeavePad()
 
         task.wait(
-            0.15
+            0.12
         )
     end
 
-    if not LeavePad then
+    if not LeavePad
+        or not Prompt
+    then
         self:SetStatus(
             "rewards done • waiting for LeavePad"
         )
@@ -25691,114 +26241,132 @@ function AutoOuwigaharaController:LeaveRewardLobby()
     Settings.__DungeonEntryBusy =
         true
 
-    HubDebug(
-        "[Combat Hub] Auto Leave Dungeon: teleporting to workspace.Map.Shops.LeavePad"
-    )
-
     QuestFarmController:ResetTarget()
 
-    pcall(function()
-        workspace:RequestStreamAroundAsync(
-            LeavePad.Position
-        )
-    end)
+    local Attempts =
+        0
 
-    local Destination =
-        LeavePad.CFrame
-        * CFrame.new(
-            0,
-            2.5,
-            0
-        )
+    while HubRunning
+        and Settings.AutoLeaveDungeon
+        and Attempts
+            < self.LeaveTriggerRetries
+    do
+        Attempts +=
+            1
 
-    local Moved =
-        pcall(function()
-            Character:PivotTo(
-                Destination
-            )
-
-            Root.CFrame =
-                Destination
-
-            Root.AssemblyLinearVelocity =
-                Vector3.zero
-
-            Root.AssemblyAngularVelocity =
-                Vector3.zero
-        end)
-
-    if not Moved then
-        Settings.__DungeonEntryBusy =
-            false
-
-        return false
-    end
-
-    HubDebug(
-        "[Combat Hub] Auto Ouwigahara: teleported to workspace.Map.Shops.LeavePad"
-    )
-
-    task.wait(
-        0.25
-    )
-
-    if not Prompt
-        or not Prompt.Parent
-    then
-        local FreshPad,
-            FreshPrompt =
+        LeavePad,
+            Prompt =
             self:GetLeavePad()
 
-        LeavePad =
-            FreshPad
-            or LeavePad
+        if not LeavePad
+            or not Prompt
+        then
+            task.wait(
+                0.20
+            )
 
-        Prompt =
-            FreshPrompt
-    end
+            continue
+        end
 
-    if not Prompt then
-        Settings.__DungeonEntryBusy =
-            false
+        pcall(function()
+            workspace:RequestStreamAroundAsync(
+                LeavePad.Position
+            )
+        end)
 
-        return false
-    end
+        local Destination =
+            LeavePad.CFrame
+            * CFrame.new(
+                0,
+                2.5,
+                0
+            )
 
-    self:SetStatus(
-        "leaving reward lobby"
-    )
+        local Moved =
+            pcall(function()
+                Character:PivotTo(
+                    Destination
+                )
 
-    local Success =
-        self:TriggerWorldPrompt(
-            Prompt
+                Root.CFrame =
+                    Destination
+
+                Root.AssemblyLinearVelocity =
+                    Vector3.zero
+
+                Root.AssemblyAngularVelocity =
+                    Vector3.zero
+            end)
+
+        if not Moved then
+            task.wait(
+                0.15
+            )
+
+            continue
+        end
+
+        self:SetStatus(
+            "leaving reward lobby"
         )
 
-    if Success then
-        HubDebug(
-            "[Combat Hub] Auto Ouwigahara: LeavePad.Ouwigahara triggered"
+        task.wait(
+            0.15
         )
 
-        self.PostRunPending =
-            false
+        local Triggered =
+            self:TriggerWorldPrompt(
+                Prompt
+            )
 
-        self.WasDungeonRunning =
-            false
+        if Triggered then
+            local ConfirmStarted =
+                os.clock()
 
-        self.LeaveCooldownUntil =
-            os.clock()
-            + 4
+            while HubRunning
+                and os.clock()
+                    - ConfirmStarted
+                    < 3
+            do
+                if not self:IsInRewardShops()
+                    or not LeavePad.Parent
+                then
+                    self.PostRunPending =
+                        false
 
-        table.clear(
-            self.ProcessedRewardPrompts
+                    self.WasDungeonRunning =
+                        false
+
+                    self.LeaveCooldownUntil =
+                        os.clock()
+                        + 4
+
+                    table.clear(
+                        self.ProcessedRewardPrompts
+                    )
+
+                    Settings.__DungeonEntryBusy =
+                        false
+
+                    return true
+                end
+
+                task.wait(
+                    0.10
+                )
+            end
+        end
+
+        task.wait(
+            0.20
         )
     end
 
     Settings.__DungeonEntryBusy =
         false
 
-    return Success
+    return false
 end
-
 
 function AutoOuwigaharaController:HandlePostRunRewards()
     if not Settings.AutoRewardChests then
@@ -25847,12 +26415,12 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         return false
     end
 
-    ----------------------------------------------------------
-    -- WAIT FOR THE SERVER-PUBLISHED CACHE COUNT WHEN AVAILABLE
-    ----------------------------------------------------------
-
     local ExpectedCaches =
         self:GetExpectedCacheCount()
+
+    ----------------------------------------------------------
+    -- INITIAL REWARD REPLICATION WAIT
+    ----------------------------------------------------------
 
     local WaitStarted =
         os.clock()
@@ -25867,50 +26435,39 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             Paid =
             self:GetRewardChestPrompts()
 
-        if ExpectedCaches > 0 then
-            if #Free >= ExpectedCaches then
-                break
-            end
-        elseif #Free > 0
+        -- Start as soon as any actionable reward appears. ExpectedCaches is
+        -- still used below to keep waiting for late free caches.
+        if #Free > 0
             or #Paid > 0
         then
             break
         end
 
         task.wait(
-            0.15
+            0.12
         )
     end
 
-    local FreeNow,
-        PaidNow =
-        self:GetRewardChestPrompts()
-
-    HubDebug(
-        "[Combat Hub] Reward shops • expectedCaches="
-            .. tostring(
-                ExpectedCaches
-            )
-            .. " visibleFree="
-            .. tostring(
-                #FreeNow
-            )
-            .. " paid="
-            .. tostring(
-                #PaidNow
-            )
-            .. " RunPoints="
-            .. tostring(
-                self:GetRunPoints()
-            )
-    )
-
     ----------------------------------------------------------
-    -- 1) ALL FREE CACHE / DEEP CACHE / FLOOR REWARDS FIRST
+    -- 1) FREE CACHES
+    --
+    -- CRITICAL:
+    -- Do NOT mark a cache processed because TriggerWorldPrompt() merely
+    -- returned true. That only means the local input call succeeded.
+    -- Confirm the chest disabled/opened/disappeared first.
     ----------------------------------------------------------
+
+    local FreePhaseStarted =
+        os.clock()
 
     local FreeEmptySince =
         nil
+
+    local ConfirmedFreeOpened =
+        0
+
+    local ConfirmedPrompt =
+        {}
 
     while HubRunning
         and Settings.AutoRewardChests
@@ -25919,26 +26476,7 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             self:GetRewardChestPrompts()
 
         local NextPrompt =
-            nil
-
-        for _,
-            Prompt in ipairs(
-                Free
-            )
-        do
-            if Prompt
-                and Prompt.Parent
-                and Prompt.Enabled
-                and not self.ProcessedRewardPrompts[
-                    Prompt
-                ]
-            then
-                NextPrompt =
-                    Prompt
-
-                break
-            end
-        end
+            Free[1]
 
         if NextPrompt then
             FreeEmptySince =
@@ -25968,25 +26506,32 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             )
 
             local Opened =
-                self:TriggerWorldPrompt(
-                    NextPrompt
+                self:TriggerAndConfirmRewardChest(
+                    NextPrompt,
+                    self.FreeChestOpenConfirmWait
                 )
 
             if Opened then
+                if not ConfirmedPrompt[
+                    NextPrompt
+                ]
+                then
+                    ConfirmedPrompt[
+                        NextPrompt
+                    ] =
+                        true
+
+                    ConfirmedFreeOpened +=
+                        1
+                end
+
                 self.ProcessedRewardPrompts[
                     NextPrompt
                 ] =
                     true
 
-                HubDebug(
-                    "[Combat Hub] Opened free reward • "
-                        .. tostring(
-                            FreeName
-                        )
-                )
-
                 task.wait(
-                    0.25
+                    0.20
                 )
 
                 self:CollectRewardLoot(
@@ -25996,20 +26541,25 @@ function AutoOuwigaharaController:HandlePostRunRewards()
                 )
 
                 task.wait(
-                    0.15
+                    0.12
                 )
             else
-                if not NextPrompt.Parent
-                    or not NextPrompt.Enabled
-                then
-                    self.ProcessedRewardPrompts[
-                        NextPrompt
-                    ] =
-                        true
-                end
+                -- Still enabled / still present = it was NOT opened.
+                -- Retry the exact same cache instead of skipping it forever.
+                self.ProcessedRewardPrompts[
+                    NextPrompt
+                ] =
+                    nil
+
+                self:SetStatus(
+                    "retrying free reward • "
+                        .. tostring(
+                            FreeName
+                        )
+                )
 
                 task.wait(
-                    0.30
+                    0.25
                 )
             end
         else
@@ -26022,8 +26572,22 @@ function AutoOuwigaharaController:HandlePostRunRewards()
                 os.clock()
                 - FreeEmptySince
 
+            local FreePhaseAge =
+                os.clock()
+                - FreePhaseStarted
+
+            local ExpectedSatisfied =
+                ExpectedCaches <= 0
+                or ConfirmedFreeOpened
+                    >= ExpectedCaches
+
             if EmptyFor
                 >= self.FreeChestEmptyConfirmTime
+                and (
+                    ExpectedSatisfied
+                    or FreePhaseAge
+                        >= self.FreeChestRetryMaxWait
+                )
             then
                 local FinalFree =
                     self:GetRewardChestPrompts()
@@ -26044,18 +26608,21 @@ function AutoOuwigaharaController:HandlePostRunRewards()
 
     ----------------------------------------------------------
     -- 2) PAID 30K OUWIGAHARA CHEST
+    --
+    -- Deterministic transition:
+    --   enough RunPoints -> keep acquiring/retrying paid chest
+    --   not enough       -> reward pass is complete, then LeavePad
     ----------------------------------------------------------
 
-    local SafetyCount =
+    local PaidAcquireStarted =
+        os.clock()
+
+    local PaidTriggerFailures =
         0
 
     while HubRunning
         and Settings.AutoRewardChests
-        and SafetyCount < 100
     do
-        SafetyCount +=
-            1
-
         local FreeCheck =
             self:GetRewardChestPrompts()
 
@@ -26068,25 +26635,68 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             return true
         end
 
-        local Entry,
-            CurrentPoints,
-            Cost =
-            self:GetAffordablePaidChest(
-                self.PaidAffordabilityConfirmTime
+        local CurrentPoints =
+            self:GetRunPoints()
+
+        local DefaultCost =
+            30000
+
+        if CurrentPoints
+            < DefaultCost
+        then
+            -- Nothing affordable remains. Advance to leave handling.
+            break
+        end
+
+        local Entry =
+            self:WaitForPaidRewardPrompt(
+                math.min(
+                    self.PaidPromptRespawnWait,
+                    2.0
+                )
             )
 
         if not Entry then
-            HubDebug(
-                "[Combat Hub] Paid chest skipped • RunPoints="
-                    .. tostring(
-                        CurrentPoints
-                    )
-                    .. " cost="
-                    .. tostring(
-                        Cost
-                    )
-            )
+            if os.clock()
+                - PaidAcquireStarted
+                < self.PaidAcquireRetryWindow
+            then
+                self:SetStatus(
+                    "waiting for 30k Ouwigahara Chest"
+                )
 
+                task.wait(
+                    0.20
+                )
+
+                continue
+            end
+
+            -- We still have enough points, so DO NOT call the reward pass
+            -- complete or leave. Let the next controller step retry again.
+            self.RewardPassComplete =
+                false
+
+            Finish()
+
+            return true
+        end
+
+        PaidAcquireStarted =
+            os.clock()
+
+        local Cost =
+            tonumber(
+                Entry.Cost
+            )
+            or DefaultCost
+
+        CurrentPoints =
+            self:GetRunPoints()
+
+        if CurrentPoints
+            < Cost
+        then
             break
         end
 
@@ -26096,7 +26706,7 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             )
 
         local BeforePoints =
-            self:GetRunPoints()
+            CurrentPoints
 
         self:SetStatus(
             "opening paid chest • "
@@ -26106,15 +26716,36 @@ function AutoOuwigaharaController:HandlePostRunRewards()
                 .. " points"
         )
 
-        if not self:TriggerWorldPrompt(
-            Entry.Prompt
-        ) then
+        local Triggered =
+            self:TriggerWorldPrompt(
+                Entry.Prompt
+            )
+
+        if not Triggered then
+            PaidTriggerFailures +=
+                1
+
+            if PaidTriggerFailures
+                >= self.PaidTriggerRetryLimit
+            then
+                self.RewardPassComplete =
+                    false
+
+                Finish()
+
+                return true
+            end
+
             task.wait(
-                0.40
+                0.30
             )
 
             continue
         end
+
+        ------------------------------------------------------
+        -- CONFIRM SERVER ACCEPTED PURCHASE BY POINT DEDUCTION
+        ------------------------------------------------------
 
         local Deducted =
             false
@@ -26142,11 +26773,40 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             )
         end
 
+        if not Deducted then
+            PaidTriggerFailures +=
+                1
+
+            self:SetStatus(
+                "retrying paid Ouwigahara Chest"
+            )
+
+            if PaidTriggerFailures
+                >= self.PaidTriggerRetryLimit
+            then
+                self.RewardPassComplete =
+                    false
+
+                Finish()
+
+                return true
+            end
+
+            task.wait(
+                0.35
+            )
+
+            continue
+        end
+
+        PaidTriggerFailures =
+            0
+
         local AfterPoints =
             self:GetRunPoints()
 
         task.wait(
-            0.25
+            0.20
         )
 
         self:CollectRewardLoot(
@@ -26155,15 +26815,9 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             or nil
         )
 
-        if not Deducted
-            or AfterPoints >= BeforePoints
-        then
-            HubDebug(
-                "[Combat Hub] Paid chest did not deduct RunPoints • stopping paid loop"
-            )
-
-            break
-        end
+        ------------------------------------------------------
+        -- If another free cache appears, go back through the free pass.
+        ------------------------------------------------------
 
         local FreeAfterPaid =
             self:GetRewardChestPrompts()
@@ -26177,8 +26831,13 @@ function AutoOuwigaharaController:HandlePostRunRewards()
             return true
         end
 
-        -- Server waits 6 seconds before Reseal() + Unlock().
-        if AfterPoints >= Cost then
+        ------------------------------------------------------
+        -- If we can afford another paid chest, wait for the 6s reseal.
+        ------------------------------------------------------
+
+        if AfterPoints
+            >= Cost
+        then
             self:SetStatus(
                 "waiting for paid chest reseal"
             )
@@ -26209,14 +26868,14 @@ function AutoOuwigaharaController:HandlePostRunRewards()
                 )
             end
 
-            self:WaitForPaidRewardPrompt(
-                self.PaidPromptRespawnWait
-            )
+            -- Loop naturally reacquires the paid prompt.
+        else
+            break
         end
     end
 
     ----------------------------------------------------------
-    -- 3) FINAL FREE-CACHE / LOOT CHECK BEFORE LEAVE
+    -- 3) FINAL FREE / LOOT SAFETY
     ----------------------------------------------------------
 
     local FinalSafetyStarted =
@@ -26253,18 +26912,37 @@ function AutoOuwigaharaController:HandlePostRunRewards()
         )
     end
 
+    ----------------------------------------------------------
+    -- 4) REWARD PASS COMPLETE
+    ----------------------------------------------------------
+
     self.RewardPassComplete =
         true
 
     self.PostRunPending =
         true
 
-    HubDebug(
-        "[Combat Hub] Reward pass complete • RunPoints="
-            .. tostring(
-                self:GetRunPoints()
-            )
-    )
+    ----------------------------------------------------------
+    -- If Auto Leave Dungeon is enabled, transition immediately instead
+    -- of waiting for an unrelated future state change.
+    ----------------------------------------------------------
+
+    if Settings.AutoLeaveDungeon then
+        self:SetStatus(
+            "rewards complete • leaving"
+        )
+
+        local Left =
+            self:LeaveRewardLobby()
+
+        if Left then
+            self.RewardPassComplete =
+                false
+
+            self.PostRunPending =
+                false
+        end
+    end
 
     Finish()
 
