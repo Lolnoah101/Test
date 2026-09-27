@@ -433,6 +433,7 @@ local Rayfield = LoadRayfield()
 
 local Settings = {
     AutoClick = false,
+    AutoClickRange = 22,
     AutoBlock = false,
 
     -- Automatically cycles selected keyboard-bound skills.
@@ -4337,34 +4338,292 @@ local function SendCombatStage(
 end
 
 
+local AutoClickNearbyCache = {
+    CheckedAt = 0,
+    Result = false,
+    Interval = 0.08,
+}
+
+
+local function GetAutoClickEnemyRoot(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return nil
+    end
+
+    return Model:FindFirstChild(
+        "HumanoidRootPart"
+    )
+        or Model.PrimaryPart
+        or Model:FindFirstChild(
+            "UpperTorso"
+        )
+        or Model:FindFirstChild(
+            "Torso"
+        )
+        or Model:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
+end
+
+
+local function HasNearbyEnemyForAutoClick()
+    local Now =
+        os.clock()
+
+    if Now
+        - AutoClickNearbyCache.CheckedAt
+        < AutoClickNearbyCache.Interval
+    then
+        return AutoClickNearbyCache.Result
+    end
+
+    AutoClickNearbyCache.CheckedAt =
+        Now
+
+    local Character =
+        LocalPlayer.Character
+
+    local Root =
+        Character
+        and Character:FindFirstChild(
+            "HumanoidRootPart"
+        )
+
+    local Humanoid =
+        Character
+        and Character:FindFirstChildOfClass(
+            "Humanoid"
+        )
+
+    if not Root
+        or not Humanoid
+        or Humanoid.Health <= 0
+    then
+        AutoClickNearbyCache.Result =
+            false
+
+        return false
+    end
+
+    local Range =
+        math.clamp(
+            tonumber(
+                Settings.AutoClickRange
+            )
+            or 22,
+            5,
+            80
+        )
+
+    ----------------------------------------------------------
+    -- First check NPCs explicitly following / aggroed to us.
+    ----------------------------------------------------------
+
+    local Following =
+        Character:FindFirstChild(
+            "NpcsFollowing"
+        )
+
+    if Following then
+        for _,
+            ValueObject in ipairs(
+                Following:GetChildren()
+            )
+        do
+            if ValueObject:IsA(
+                "ObjectValue"
+            )
+                and ValueObject.Value
+            then
+                local Model =
+                    ValueObject.Value
+
+                if Model:IsA(
+                    "Model"
+                )
+                then
+                    local EnemyHumanoid =
+                        Model:FindFirstChildWhichIsA(
+                            "Humanoid",
+                            true
+                        )
+
+                    local EnemyRoot =
+                        GetAutoClickEnemyRoot(
+                            Model
+                        )
+
+                    if EnemyHumanoid
+                        and EnemyHumanoid.Health > 0
+                        and EnemyRoot
+                        and (
+                            EnemyRoot.Position
+                            - Root.Position
+                        ).Magnitude
+                            <= Range
+                    then
+                        AutoClickNearbyCache.Result =
+                            true
+
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    ----------------------------------------------------------
+    -- Then scan any live NPC under an ActiveNpcs folder.
+    ----------------------------------------------------------
+
+    local HumanoidsFolder =
+        workspace:FindFirstChild(
+            "Humanoids"
+        )
+
+    if not HumanoidsFolder then
+        AutoClickNearbyCache.Result =
+            false
+
+        return false
+    end
+
+    for _,
+        EnemyHumanoid in ipairs(
+            HumanoidsFolder:GetDescendants()
+        )
+    do
+        if EnemyHumanoid:IsA(
+            "Humanoid"
+        )
+            and EnemyHumanoid.Health > 0
+        then
+            local Model =
+                EnemyHumanoid.Parent
+
+            if Model
+                and Model:IsA(
+                    "Model"
+                )
+                and Model ~= Character
+                and not Players:GetPlayerFromCharacter(
+                    Model
+                )
+            then
+                local ActiveNpcs =
+                    Model:FindFirstAncestor(
+                        "ActiveNpcs"
+                    )
+
+                if ActiveNpcs then
+                    local EnemyRoot =
+                        GetAutoClickEnemyRoot(
+                            Model
+                        )
+
+                    if EnemyRoot
+                        and (
+                            EnemyRoot.Position
+                            - Root.Position
+                        ).Magnitude
+                            <= Range
+                    then
+                        AutoClickNearbyCache.Result =
+                            true
+
+                        return true
+                    end
+                end
+            end
+        end
+    end
+
+    AutoClickNearbyCache.Result =
+        false
+
+    return false
+end
+
+
 local function StartAutoClick()
-    AutoClickLoopID += 1
+    AutoClickLoopID +=
+        1
 
     local LoopID =
         AutoClickLoopID
 
+    AutoClickNearbyCache.CheckedAt =
+        0
+
+    AutoClickNearbyCache.Result =
+        false
+
     task.spawn(function()
         while HubRunning
             and Settings.AutoClick
-            and LoopID == AutoClickLoopID
+            and LoopID
+                == AutoClickLoopID
         do
+            --------------------------------------------------
+            -- No nearby live enemy = send NO combat stages.
+            --------------------------------------------------
+
+            if not HasNearbyEnemyForAutoClick()
+            then
+                task.wait(
+                    0.05
+                )
+
+                continue
+            end
+
             local Context =
                 ResolveCombatContext()
 
-            -- Keep the already-working direct remote 1 -> 5 cycle.
-            -- Only the weapon/preset/timing lookup is dynamic now.
+            local CompletedCombo =
+                true
+
             for Stage = 1, 5 do
                 if not HubRunning
                     or not Settings.AutoClick
-                    or LoopID ~= AutoClickLoopID
+                    or LoopID
+                        ~= AutoClickLoopID
                 then
+                    CompletedCombo =
+                        false
+
                     break
                 end
 
-                SendCombatStage(
-                    Stage,
-                    Context
-                )
+                -- Re-check before every stage so death / movement / teleport
+                -- cancels the rest of the combo instead of building requests.
+                if not HasNearbyEnemyForAutoClick()
+                then
+                    CompletedCombo =
+                        false
+
+                    break
+                end
+
+                local Sent =
+                    SendCombatStage(
+                        Stage,
+                        Context
+                    )
+
+                if not Sent then
+                    -- Auto Block can intentionally suppress a stage while
+                    -- defending. Stop this combo and restart fresh afterward.
+                    CompletedCombo =
+                        false
+
+                    break
+                end
 
                 if Stage < 5 then
                     task.wait(
@@ -4375,20 +4634,31 @@ local function StartAutoClick()
 
             if HubRunning
                 and Settings.AutoClick
-                and LoopID == AutoClickLoopID
+                and LoopID
+                    == AutoClickLoopID
             then
                 task.wait(
-                    COMBO_RESET_DELAY
+                    CompletedCombo
+                    and COMBO_RESET_DELAY
+                    or 0.04
                 )
             end
         end
     end)
 end
 
-
 local function StopAutoClick()
-    Settings.AutoClick = false
-    AutoClickLoopID += 1
+    Settings.AutoClick =
+        false
+
+    AutoClickLoopID +=
+        1
+
+    AutoClickNearbyCache.CheckedAt =
+        0
+
+    AutoClickNearbyCache.Result =
+        false
 end
 
 
@@ -17506,6 +17776,54 @@ function AutoSellController:BuildBatch(
 end
 
 
+function AutoSellController:IsSafeCoinBatch(
+    Batch
+)
+    if type(
+        Batch
+    ) ~= "table"
+    then
+        return false
+    end
+
+    local HasAnything =
+        false
+
+    for Name,
+        Amount in pairs(
+            Batch
+        )
+    do
+        -- Hard whitelist. No equipment, accessory, material, loot, soul,
+        -- consumable, or other inventory name may reach SellItems here.
+        if self.CoinSet[
+            Name
+        ] ~= true
+        then
+            return false
+        end
+
+        Amount =
+            tonumber(
+                Amount
+            )
+
+        if not Amount
+            or Amount <= 0
+            or Amount
+                > self.MaxBatchPerItem
+        then
+            return false
+        end
+
+        HasAnything =
+            true
+    end
+
+    return HasAnything
+end
+
+
 function AutoSellController:WaitForGinzo(
     LoadPosition
 )
@@ -17790,6 +18108,17 @@ function AutoSellController:SellCurrentCoins()
             )
 
         if not Batch then
+            break
+        end
+
+        if not self:IsSafeCoinBatch(
+            Batch
+        )
+        then
+            warn(
+                "[Combat Hub] Auto Sell Coins blocked an unsafe SellItems batch"
+            )
+
             break
         end
 
@@ -21761,6 +22090,34 @@ CombatRow:CreateToggle({
             "Auto Click",
             Value and "Enabled" or "Disabled"
         )
+    end,
+})
+
+
+MainTab:CreateSlider({
+    name = "Auto Click Range",
+    range = {
+        5,
+        60,
+    },
+    increment = 1,
+    value = 22,
+    suffix = " studs",
+    flag = "AutoClickRange",
+
+    callback = function(Value)
+        Settings.AutoClickRange =
+            math.clamp(
+                tonumber(
+                    Value
+                )
+                or 22,
+                5,
+                60
+            )
+
+        AutoClickNearbyCache.CheckedAt =
+            0
     end,
 })
 
