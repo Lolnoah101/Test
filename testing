@@ -30482,22 +30482,6 @@ SettingsRow:CreateToggle({
 })
 
 
-SettingsTab:CreateButton({
-    name = "Test Teleport Queue",
-    callback = function()
-        local QueueFunction =
-            GetTeleportQueueFunction()
-
-        Toast(
-            "Teleport Queue",
-            type(
-                QueueFunction
-            ) == "function"
-                and "Supported by executor"
-                or "Not supported by executor"
-        )
-    end,
-})
 
 local function UnloadHub()
     if not HubRunning then
