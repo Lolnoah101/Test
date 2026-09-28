@@ -13,8 +13,48 @@
 --// Auto Click continuously runs stages 1 -> 5 in order.
 --// ============================================================
 
+--// ============================================================
+--// SINGLETON / DUPLICATE-LOAD GUARD
+--// ============================================================
+
+do
+    local ExistingUnload =
+        rawget(
+            getgenv(),
+            "__HOLLOWMOON_AUTOCLICK_UNLOAD"
+        )
+
+    if type(
+        ExistingUnload
+    ) == "function"
+    then
+        pcall(
+            ExistingUnload
+        )
+
+        task.wait(
+            0.15
+        )
+    end
+end
+
+getgenv().__HOLLOWMOON_HUB_GENERATION =
+    (
+        tonumber(
+            getgenv().__HOLLOWMOON_HUB_GENERATION
+        )
+        or 0
+    )
+    + 1
+
+local HUB_GENERATION =
+    getgenv().__HOLLOWMOON_HUB_GENERATION
+
+
 local Players =
     game:GetService("Players")
+
+
 
 local ReplicatedStorage =
     game:GetService("ReplicatedStorage")
@@ -22,8 +62,6 @@ local ReplicatedStorage =
 local VirtualUser =
     game:GetService("VirtualUser")
 
-local VirtualInputManager =
-    game:GetService("VirtualInputManager")
 
 local TweenService =
     game:GetService("TweenService")
@@ -78,7 +116,12 @@ if getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD then
     pcall(
         getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD
     )
-    getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD = nil
+    if HUB_GENERATION
+        == getgenv().__HOLLOWMOON_HUB_GENERATION
+    then
+        getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD =
+            nil
+    end
 end
 
 local CombatEvent =
@@ -517,6 +560,10 @@ local Settings = {
     SpeedMultiplier = 1,
 
     AntiAFK = true,
+
+    -- Queue the hub loader for future Roblox teleports/rejoins.
+    AutoExecuteOnTeleport = false,
+
     AntiSunDamage = false,
     AntiRagdoll = false,
 }
@@ -621,6 +668,241 @@ local Window =
             customFolder = "HollowMoonHub",
         },
     })
+
+--// ============================================================
+--// HUB UI LIFECYCLE HELPERS
+--// ============================================================
+
+local function GetPossibleGuiRoots()
+    local Roots = {
+        game:GetService("CoreGui"),
+    }
+
+    if type(
+        gethui
+    ) == "function"
+    then
+        local Success,
+            HiddenUi =
+            pcall(
+                gethui
+            )
+
+        if Success
+            and HiddenUi
+        then
+            table.insert(
+                Roots,
+                HiddenUi
+            )
+        end
+    end
+
+    return Roots
+end
+
+
+local function GuiLooksLikeHollowMoonHub(
+    Object
+)
+    if not Object
+        or not Object.Parent
+    then
+        return false
+    end
+
+    local Name =
+        string.lower(
+            tostring(
+                Object.Name
+                or ""
+            )
+        )
+
+    if string.find(
+        Name,
+        "hollowmoon",
+        1,
+        true
+    )
+    then
+        return true
+    end
+
+    local Checked =
+        0
+
+    for _,
+        Descendant in ipairs(
+            Object:GetDescendants()
+        )
+    do
+        Checked +=
+            1
+
+        if Checked > 600 then
+            break
+        end
+
+        if Descendant:IsA(
+            "TextLabel"
+        )
+            or Descendant:IsA(
+                "TextButton"
+            )
+        then
+            local Text =
+                string.lower(
+                    tostring(
+                        Descendant.Text
+                        or ""
+                    )
+                )
+
+            if Text == "hollowmoonhub"
+                or string.find(
+                    Text,
+                    "hollowmoonhub",
+                    1,
+                    true
+                )
+            then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+
+local function DestroyHollowMoonHubGuiFallback()
+    local Destroyed =
+        0
+
+    for _,
+        Root in ipairs(
+            GetPossibleGuiRoots()
+        )
+    do
+        for _,
+            Child in ipairs(
+                Root:GetChildren()
+            )
+        do
+            if (
+                Child:IsA(
+                    "ScreenGui"
+                )
+                or Child:IsA(
+                    "Folder"
+                )
+            )
+                and GuiLooksLikeHollowMoonHub(
+                    Child
+                )
+            then
+                local Success =
+                    pcall(function()
+                        Child:Destroy()
+                    end)
+
+                if Success then
+                    Destroyed +=
+                        1
+                end
+            end
+        end
+    end
+
+    return Destroyed
+end
+
+
+local function DestroyRayfieldWindow()
+    local Destroyed =
+        false
+
+    ----------------------------------------------------------
+    -- Gen2 builds can expose lifecycle methods in different places.
+    ----------------------------------------------------------
+
+    local WindowMethods = {
+        "Destroy",
+        "Unload",
+        "Close",
+    }
+
+    for _,
+        MethodName in ipairs(
+            WindowMethods
+        )
+    do
+        if Window
+            and type(
+                Window[
+                    MethodName
+                ]
+            ) == "function"
+        then
+            local Success =
+                pcall(function()
+                    Window[
+                        MethodName
+                    ](
+                        Window
+                    )
+                end)
+
+            Destroyed =
+                Destroyed
+                or Success
+        end
+    end
+
+    local LibraryMethods = {
+        "Destroy",
+        "Unload",
+    }
+
+    for _,
+        MethodName in ipairs(
+            LibraryMethods
+        )
+    do
+        if Rayfield
+            and type(
+                Rayfield[
+                    MethodName
+                ]
+            ) == "function"
+        then
+            local Success =
+                pcall(function()
+                    Rayfield[
+                        MethodName
+                    ](
+                        Rayfield
+                    )
+                end)
+
+            Destroyed =
+                Destroyed
+                or Success
+        end
+    end
+
+    task.wait(
+        0.05
+    )
+
+    local FallbackDestroyed =
+        DestroyHollowMoonHubGuiFallback()
+
+    return Destroyed
+        or FallbackDestroyed > 0
+end
+
 
 Window:CreateSection({
     name = "Automation"
@@ -29759,6 +30041,155 @@ function AntiRagdollController:Stop()
 end
 
 
+
+--// ============================================================
+--// AUTO RECONNECT
+--// ============================================================
+
+
+--// ============================================================
+--// SHARED TELEPORT AUTO-EXECUTE LOADER
+--// ============================================================
+
+local HOLLOWMOON_RAW_URL =
+    "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+
+
+local function GetTeleportQueueFunction()
+    local QueueFunction =
+        nil
+
+    pcall(function()
+        QueueFunction =
+            rawget(
+                getgenv(),
+                "queue_on_teleport"
+            )
+            or rawget(
+                getgenv(),
+                "queueonteleport"
+            )
+    end)
+
+    if type(
+        QueueFunction
+    ) ~= "function"
+        and type(
+            syn
+        ) == "table"
+    then
+        QueueFunction =
+            syn.queue_on_teleport
+    end
+
+    return type(
+        QueueFunction
+    ) == "function"
+        and QueueFunction
+        or nil
+end
+
+
+local function QueueHollowMoonHubForTeleport()
+    if getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED then
+        return true
+    end
+
+    local QueueFunction =
+        GetTeleportQueueFunction()
+
+    if not QueueFunction then
+        return false
+    end
+
+    local Source = [=[
+task.wait(1.5)
+
+-- The queued entry is now being consumed by this teleport.
+getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
+
+-- Prevent duplicate stale queued entries from creating several UIs.
+if getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
+    return
+end
+
+getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
+
+pcall(function()
+    local ExistingUnload =
+        rawget(
+            getgenv(),
+            "__HOLLOWMOON_AUTOCLICK_UNLOAD"
+        )
+
+    if type(ExistingUnload) == "function" then
+        pcall(ExistingUnload)
+        task.wait(0.15)
+    end
+
+    loadstring(
+        game:HttpGet(
+            "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+        )
+    )()
+end)
+
+task.delay(
+    5,
+    function()
+        getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = nil
+    end
+)
+]=]
+
+    local Success =
+        pcall(
+            QueueFunction,
+            Source
+        )
+
+    if Success then
+        getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED =
+            true
+    end
+
+    return Success
+end
+
+
+local AutoExecuteController = {
+    Queued = false,
+}
+
+
+function AutoExecuteController:Enable()
+    local Success =
+        QueueHollowMoonHubForTeleport()
+
+    self.Queued =
+        Success
+
+    return Success
+end
+
+
+function AutoExecuteController:Disable()
+    -- Most executor queue_on_teleport APIs do not expose a portable
+    -- "dequeue" operation. Disabling prevents future queues after this load.
+    self.Queued =
+        false
+end
+
+
+function AutoExecuteController:Refresh()
+    if Settings.AutoExecuteOnTeleport then
+        return self:Enable()
+    end
+
+    return false
+end
+
+
 local PlayerMovementGroup =
     PlayerTab:CreateGroup()
 
@@ -29898,88 +30329,218 @@ SettingsRow:CreateToggle({
     end,
 })
 
+
+
+
+SettingsRow:CreateToggle({
+    name = "Auto Execute on Teleport",
+    value = false,
+    flag = "AutoExecuteOnTeleport",
+
+    callback = function(Value)
+        Settings.AutoExecuteOnTeleport =
+            Value
+
+        if Value then
+            AutoExecuteController:Enable()
+        else
+            AutoExecuteController:Disable()
+        end
+    end,
+})
+
 local function UnloadHub()
     if not HubRunning then
+        -- Even if logic is already stopped, make sure a stale UI is removed.
+        DestroyRayfieldWindow()
+
         return
     end
 
-    HubRunning = false
-    Settings.AutoEquipSlot = false
+    ----------------------------------------------------------
+    -- STOP NEW WORK FIRST
+    ----------------------------------------------------------
+
+    HubRunning =
+        false
+
+    Settings.AutoEquipSlot =
+        false
+
+    Settings.AutoSkills =
+        false
+
+    Settings.AutoEquipBestEquipment =
+        false
+
+    Settings.AutoFarm =
+        false
+
+    Settings.AutoFarmBoss =
+        false
+
+    Settings.AutoFarmDungeon =
+        false
+
+    Settings.AutoRewardChests =
+        false
+
+    Settings.AutoLeaveDungeon =
+        false
+
+    Settings.AutoDieAtPoints =
+        false
+
+    Settings.AutoOuwigaharaNormal =
+        false
+
+    Settings.AutoSkipWave =
+        false
+
+    Settings.AutoPickBestCards =
+        false
+
+    Settings.AutoSecondWind =
+        false
+
+    Settings.AutoFarmQuest =
+        false
+
+    Settings.AntiAFK =
+        false
+
+    ----------------------------------------------------------
+    -- STOP CONTROLLERS / LOOPS
+    ----------------------------------------------------------
+
     StopAutoClick()
+
     AutoBlockController:Stop()
+
     AutoSkillController:Stop()
+
     AutoBestEquipmentController:Stop()
+
     StopAutoOpenChest()
+
     RaidController:Stop()
+
     AutoSellController:Stop()
+
     AutoOuwigaharaController:Stop()
+
     AutoSkipWaveController:Stop()
+
     AutoCardController:Stop()
 
     StopFly()
+
     AntiRagdollController:Stop()
+
     RestoreWalkSpeed()
+
     StopAutoPickUpLoot()
+
     QuestController:Stop()
+
+    QuestFarmController:Stop()
+
+    StopAntiSunDamage()
+
+    ----------------------------------------------------------
+    -- CLEAR SHARED MOVEMENT / BUSY FLAGS
+    ----------------------------------------------------------
+
+    Settings.__LootAggroCleanup =
+        false
+
+    Settings.__BossRewardBusy =
+        false
+
+    Settings.__BossRewardCollecting =
+        false
+
+    Settings.__BossLootCenter =
+        nil
+
+    Settings.__BossLootRadius =
+        nil
+
+    Settings.__LootFarmBusy =
+        false
+
+    Settings.__RewardRoomBusy =
+        false
+
+    Settings.__DungeonEntryBusy =
+        false
+
+    ----------------------------------------------------------
+    -- DISCONNECT STANDALONE CONNECTIONS
+    ----------------------------------------------------------
 
     if QuestFarmStateConnection then
         QuestFarmStateConnection:Disconnect()
-        QuestFarmStateConnection = nil
+
+        QuestFarmStateConnection =
+            nil
     end
-
-    Settings.AutoSkills = false
-    Settings.AutoEquipBestEquipment = false
-    Settings.AutoFarm = false
-    Settings.AutoFarmBoss = false
-    Settings.AutoFarmDungeon = false
-
-    Settings.__LootAggroCleanup = false
-    Settings.__BossRewardBusy = false
-    Settings.__BossRewardCollecting = false
-    Settings.__BossLootCenter = nil
-    Settings.__BossLootRadius = nil
-    Settings.AutoRewardChests = false
-    Settings.AutoLeaveDungeon = false
-    Settings.AutoDieAtPoints = false
-    Settings.AutoOuwigaharaNormal = false
-    Settings.AutoSkipWave = false
-    Settings.AutoPickBestCards = false
-    Settings.AutoSecondWind = false
-    Settings.AutoFarmQuest = false
-    QuestFarmController:Stop()
-    Settings.AntiAFK = false
-    StopAntiSunDamage()
 
     if ChestAddedConnection then
         ChestAddedConnection:Disconnect()
-        ChestAddedConnection = nil
+
+        ChestAddedConnection =
+            nil
     end
 
     if LootAddedConnection then
         LootAddedConnection:Disconnect()
-        LootAddedConnection = nil
+
+        LootAddedConnection =
+            nil
     end
 
     if AntiAFKConnection then
         AntiAFKConnection:Disconnect()
-        AntiAFKConnection = nil
+
+        AntiAFKConnection =
+            nil
     end
 
     if CharacterAddedConnection then
         CharacterAddedConnection:Disconnect()
-        CharacterAddedConnection = nil
+
+        CharacterAddedConnection =
+            nil
     end
 
     if FlyConnection then
         FlyConnection:Disconnect()
-        FlyConnection = nil
+
+        FlyConnection =
+            nil
     end
 
-    pcall(function()
-        Window:Unload()
-    end)
+    ----------------------------------------------------------
+    -- CLEAR SINGLETON POINTER BEFORE DESTROYING THE WINDOW.
+    ----------------------------------------------------------
 
-    getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD = nil
+    if getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD
+        == UnloadHub
+    then
+        getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD =
+            nil
+    end
+
+    ----------------------------------------------------------
+    -- ACTUALLY REMOVE THE RAYFIELD WINDOW.
+    ----------------------------------------------------------
+
+    DestroyRayfieldWindow()
+end
+
+
+getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD = nil
 end
 
 getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD =
@@ -29989,6 +30550,19 @@ SettingsTab:CreateButton({
     name = "Unload Hub",
     callback = UnloadHub,
 })
+
+task.defer(function()
+    task.wait(
+        1
+    )
+
+    if HubRunning
+        and Settings.AutoExecuteOnTeleport
+    then
+        AutoExecuteController:Refresh()
+    end
+end)
+
 
 Toast(
     "HollowMoonHub",
