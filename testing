@@ -13,6 +13,10 @@
 --// Auto Click continuously runs stages 1 -> 5 in order.
 --// ============================================================
 
+getgenv().__HOLLOWMOON_LOADING =
+    true
+
+
 --// ============================================================
 --// SINGLETON / DUPLICATE-LOAD GUARD
 --// ============================================================
@@ -49,6 +53,82 @@ getgenv().__HOLLOWMOON_HUB_GENERATION =
 
 local HUB_GENERATION =
     getgenv().__HOLLOWMOON_HUB_GENERATION
+
+
+--// ============================================================
+--// GAME LOAD / STARTUP GATE
+--// ============================================================
+
+do
+    ----------------------------------------------------------
+    -- Wait for Roblox itself to finish loading first.
+    ----------------------------------------------------------
+
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+
+    local PlayersService =
+        game:GetService(
+            "Players"
+        )
+
+    local ReplicatedStorageService =
+        game:GetService(
+            "ReplicatedStorage"
+        )
+
+    local Local =
+        PlayersService.LocalPlayer
+
+    local StartedAt =
+        os.clock()
+
+    ----------------------------------------------------------
+    -- Wait for the local player + PlayerGui.
+    ----------------------------------------------------------
+
+    while not Local
+        and os.clock()
+            - StartedAt
+            < 30
+    do
+        task.wait(
+            0.10
+        )
+
+        Local =
+            PlayersService.LocalPlayer
+    end
+
+    if Local then
+        Local:WaitForChild(
+            "PlayerGui",
+            30
+        )
+    end
+
+    ----------------------------------------------------------
+    -- This game builds most client systems under ReplicatedStorage.CAM.
+    -- Waiting for CAM prevents the hub from constructing while the game's
+    -- own modules/remotes are still absent during teleport loading.
+    ----------------------------------------------------------
+
+    ReplicatedStorageService:WaitForChild(
+        "CAM",
+        30
+    )
+
+    ----------------------------------------------------------
+    -- Give client scripts one short frame window to initialize after their
+    -- replicated hierarchy appears. This is intentionally small; it is not
+    -- a blind long sleep.
+    ----------------------------------------------------------
+
+    task.wait(
+        0.75
+    )
+end
 
 
 local Players =
@@ -902,6 +982,11 @@ local function DestroyRayfieldWindow()
     return Destroyed
         or FallbackDestroyed > 0
 end
+
+
+getgenv().__HOLLOWMOON_LOADING =
+    nil
+
 
 
 Window:CreateSection({
@@ -30112,7 +30197,36 @@ local function QueueHollowMoonHubForTeleport()
     ----------------------------------------------------------
 
     local Source = [=[
-task.wait(1.25)
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players =
+    game:GetService("Players")
+
+local ReplicatedStorage =
+    game:GetService("ReplicatedStorage")
+
+local player =
+    Players.LocalPlayer
+
+local started =
+    os.clock()
+
+while not player
+    and os.clock() - started < 30
+do
+    task.wait(0.10)
+    player = Players.LocalPlayer
+end
+
+if player then
+    player:WaitForChild("PlayerGui", 30)
+end
+
+ReplicatedStorage:WaitForChild("CAM", 30)
+
+task.wait(0.75)
 
 getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
 
@@ -30148,7 +30262,36 @@ local function queueNext()
     end
 
     local nextSource = [==[
-task.wait(1.25)
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players =
+    game:GetService("Players")
+
+local ReplicatedStorage =
+    game:GetService("ReplicatedStorage")
+
+local player =
+    Players.LocalPlayer
+
+local started =
+    os.clock()
+
+while not player
+    and os.clock() - started < 30
+do
+    task.wait(0.10)
+    player = Players.LocalPlayer
+end
+
+if player then
+    player:WaitForChild("PlayerGui", 30)
+end
+
+ReplicatedStorage:WaitForChild("CAM", 30)
+
+task.wait(0.75)
 
 getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
 
@@ -30182,7 +30325,36 @@ if q then
     pcall(
         q,
         [[
-task.wait(1.25)
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players =
+    game:GetService("Players")
+
+local ReplicatedStorage =
+    game:GetService("ReplicatedStorage")
+
+local player =
+    Players.LocalPlayer
+
+local started =
+    os.clock()
+
+while not player
+    and os.clock() - started < 30
+do
+    task.wait(0.10)
+    player = Players.LocalPlayer
+end
+
+if player then
+    player:WaitForChild("PlayerGui", 30)
+end
+
+ReplicatedStorage:WaitForChild("CAM", 30)
+
+task.wait(0.75)
 loadstring(
     game:HttpGet(
         "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
