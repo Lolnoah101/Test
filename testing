@@ -19144,13 +19144,39 @@ local AutoBlockController = {
     NpcAnimStateWatchers = {},
     RecentAnimThreatUntil = setmetatable({}, { __mode = "k" }),
 
+    -- NEW: direct replicated NPC combat-state watchers.
+    --
+    -- User-observed signals:
+    --   Combo                -> changes/increments while the NPC swings
+    --   LastRegisteredCombo  -> final/registered combo state
+    --   Choosing / Choosing_1 -> briefly appears during attack/charge choice
+    --   Blocking             -> appears while the NPC is defending
+    --
+    -- These are more useful than guessing attack animations alone.
+    NpcCombatStateWatchers = {},
+    RecentDirectThreatUntil = setmetatable({}, { __mode = "k" }),
+
+    -- PRIMARY Auto Block detector:
+    -- every Heartbeat, poll the current fighter's exact replicated combat
+    -- values instead of relying on event connections being attached in time.
+    HeartbeatCombatSnapshots = setmetatable({}, { __mode = "k" }),
+    HeartbeatThreatUntil = 0,
+    HeartbeatThreatModel = nil,
+
+    -- workspace.Debree often receives replicated attack VFX / telegraphs.
+    DebreeConnection = nil,
+    RecentDebreeThreatUntil = 0,
+    RecentDebreeThreatModel = nil,
+
     BlockingRequested = false,
     CurrentThreat = nil,
 
     LastThreatAt = 0,
     LastHoldAt = 0,
+    LastImmediateHoldAt = 0,
     LastReleaseAt = 0,
     LastWatcherRefresh = 0,
+    LastFighterRefresh = 0,
     LastDebugThreatAt = 0,
 
     -- Animation-based threat scan range.
@@ -19159,15 +19185,70 @@ local AutoBlockController = {
     -- NpcsFollowing is used to identify which nearby NPC actually targets
     -- the local player. It is context for attack detection, not a reason to
     -- hold block continuously by itself.
-    ProactiveRange = 12,
-    ProactiveFacingDot = 0.10,
+    ProactiveRange = 18,
+    ProactiveFacingDot = 0.20,
 
-    -- Hold slightly past the last detected threat frame for latency.
-    ReleaseGrace = 0.20,
+    -- NpcsFollowing is authoritative when available, but on some NPCs the
+    -- ObjectValue arrives a little later than Combo / Choosing replication.
+    -- For DIRECT attack states only, allow a short fallback when the NPC is
+    -- explicitly Aggroed, very close, and facing us.
+    DirectAggroFallbackRange = 18,
 
-    WatcherRefreshInterval = 0.20,
-    HoldRetryInterval = 0.10,
-    ReleaseRetryInterval = 0.10,
+    -- Animation-first Auto Block:
+    -- hold continuously while an attack animation is playing, then release
+    -- shortly after the final threatening animation stops.
+    -- Quicker release after the attack state disappears so the
+    -- controller is ready for the next swing sooner.
+    ReleaseGrace = 0.030,
+    AnimationThreatRange = 32,
+    AnimationStartWindow = 0.50,
+
+    -- Direct replicated state windows are retained only as fallback data.
+    ComboThreatWindow = 0.48,
+
+    -- currentcomboid changes around the NPC's active combo/swing state.
+    CurrentComboIdThreatWindow = 0.72,
+
+    -- Combo.Value changes while the NPC is actively attacking.
+    ComboValueThreatWindow = 0.68,
+
+    -- Combo.Time changes alongside active punches/attacks.
+    -- Use it as a secondary confirmation/fallback.
+    ComboTimeThreatWindow = 0.58,
+
+    -- ComboCounter appears to increase after a hit lands. It is recovery-only.
+    ComboCounterRecoveryWindow = 0.90,
+
+    ChoosingThreatWindow = 1.10,
+    RegisteredComboThreatWindow = 0.32,
+
+    -- Debree/VFX detection is supplemental only.
+    DebreeThreatRange = 24,
+    DebreeThreatWindow = 0.70,
+    DebreeAssociationRange = 30,
+
+    -- Newly spawned/rebuilt NPCs get their Animator + Combo
+    -- watchers attached much sooner.
+    WatcherRefreshInterval = 0.03,
+
+    -- Current-fighter watcher refresh is cheap (normally 1-2 ObjectValues),
+    -- so run it effectively every Heartbeat.
+    FighterRefreshInterval = 0.010,
+
+    -- Direct attack-state events send Hold immediately. This cadence is only
+    -- for maintaining/retrying the Hold while the attack remains active.
+    HoldRetryInterval = 0.012,
+    ReleaseRetryInterval = 0.025,
+
+    -- Prevent multiple replicated values changing on the same frame from
+    -- firing duplicate immediate Hold requests.
+    ImmediateHoldMinInterval = 0.004,
+
+    -- Exact-value Heartbeat detector timing.
+    -- Combo/Last/Time changes hold long enough to cover the swing while
+    -- continued changes keep extending the window.
+    HeartbeatComboHoldWindow = 0.34,
+    HeartbeatCounterHoldWindow = 0.42,
 
     AttackWords = {
         "attack",
@@ -19209,6 +19290,32 @@ local AutoBlockController = {
         "spin attack",
         "special",
         "ability",
+    },
+
+    VfxThreatWords = {
+        "telegraph",
+        "slash",
+        "strike",
+        "attack",
+        "swing",
+        "smash",
+        "slam",
+        "charge",
+        "projectile",
+        "hitbox",
+        "wave",
+        "blade",
+        "cut",
+        "swipe",
+        "beam",
+        "blast",
+        "burst",
+        "spike",
+        "eruption",
+        "impact",
+        "middle",
+        "upper",
+        "lower",
     },
 
     IgnoreWords = {
@@ -19305,17 +19412,52 @@ function AutoBlockController:GetValuesFolder()
 end
 
 
-function AutoBlockController:IsServerBlocking()
+function AutoBlockController:GetBlockPoints()
     local ValuesFolder =
         self:GetValuesFolder()
 
-    return ValuesFolder
+    local Blocking =
+        ValuesFolder
         and ValuesFolder:FindFirstChild(
             "Blocking"
-        ) ~= nil
-        or false
+        )
+
+    if not Blocking then
+        return nil,
+            nil
+    end
+
+    local Value =
+        tonumber(
+            Blocking.Value
+        )
+
+    local MaxValue =
+        tonumber(
+            Blocking.MaxValue
+        )
+
+    return Value,
+        MaxValue
 end
 
+
+function AutoBlockController:IsServerBlocking()
+    ----------------------------------------------------------
+    -- IMPORTANT:
+    -- The game's BlockRegen code treats "Blocking" as an
+    -- IntConstrainedValue containing block points / max block points.
+    --
+    -- Its existence does NOT mean the player is physically holding block.
+    -- Using presence here caused BeginBlock() to stop sending Hold after
+    -- the value replicated.
+    --
+    -- Track our own requested input state instead.
+    ----------------------------------------------------------
+
+    return self.BlockingRequested
+        == true
+end
 
 function AutoBlockController:GetModelFromHumanoid(
     Humanoid
@@ -19369,12 +19511,15 @@ function AutoBlockController:GetNpcRoot(
         "HumanoidRootPart"
     )
         or Model.PrimaryPart
+        or Model:FindFirstChild(
+            "HumanoidRootPart",
+            true
+        )
         or Model:FindFirstChildWhichIsA(
             "BasePart",
             true
         )
 end
-
 
 function AutoBlockController:IsNpcThreatInRange(
     Model
@@ -19402,7 +19547,10 @@ function AutoBlockController:IsNpcThreatInRange(
         ).Magnitude
 
     if Distance
-        > self.ThreatRange
+        > math.max(
+            self.ThreatRange,
+            self.AnimationThreatRange
+        )
     then
         return false,
             NpcRoot
@@ -19411,6 +19559,10 @@ function AutoBlockController:IsNpcThreatInRange(
     local Humanoid =
         Model:FindFirstChildOfClass(
             "Humanoid"
+        )
+        or Model:FindFirstChildWhichIsA(
+            "Humanoid",
+            true
         )
 
     if not Humanoid
@@ -19424,7 +19576,6 @@ function AutoBlockController:IsNpcThreatInRange(
         NpcRoot
 end
 
-
 function AutoBlockController:GetFollowingFolder()
     local Character =
         LocalPlayer.Character
@@ -19434,6 +19585,589 @@ function AutoBlockController:GetFollowingFolder()
             "NpcsFollowing"
         )
         or nil
+end
+
+
+function AutoBlockController:GetCurrentFightingModels()
+    local Folder =
+        self:GetFollowingFolder()
+
+    if not Folder then
+        return {}
+    end
+
+    local Results =
+        {}
+
+    local Seen =
+        {}
+
+    local function AddModel(
+        Model
+    )
+        if not Model
+            or not Model.Parent
+            or not Model:IsA(
+                "Model"
+            )
+            or Model == LocalPlayer.Character
+            or Seen[
+                Model
+            ]
+        then
+            return
+        end
+
+        Seen[
+            Model
+        ] =
+            true
+
+        Results[
+            #Results + 1
+        ] =
+            Model
+    end
+
+    for _,
+        Child in ipairs(
+            Folder:GetChildren()
+        )
+    do
+        if Child:IsA(
+            "ObjectValue"
+        ) then
+            local Value =
+                Child.Value
+
+            if Value
+                and Value.Parent
+            then
+                local Model =
+                    Value:IsA(
+                        "Model"
+                    )
+                    and Value
+                    or Value:FindFirstAncestorOfClass(
+                        "Model"
+                    )
+
+                if Model then
+                    AddModel(
+                        Model
+                    )
+
+                    --------------------------------------------------
+                    -- Many NPCs are shaped like:
+                    --   ActiveNpcs.Gyutai.Gyutai
+                    -- or
+                    --   ActiveNpcs.Bandit.Bandit
+                    --
+                    -- Combat values can live on either the inner entity or
+                    -- its immediate outer container, so include both.
+                    --------------------------------------------------
+
+                    local ParentModel =
+                        Model.Parent
+
+                    if ParentModel
+                        and ParentModel:IsA(
+                            "Model"
+                        )
+                        and ParentModel ~= workspace
+                    then
+                        AddModel(
+                            ParentModel
+                        )
+                    end
+                end
+            end
+        end
+    end
+
+    return Results
+end
+
+
+function AutoBlockController:IsCurrentFightingModel(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    for _,
+        FightingModel in ipairs(
+            self:GetCurrentFightingModels()
+        )
+    do
+        if FightingModel == Model
+            or FightingModel:IsDescendantOf(
+                Model
+            )
+            or Model:IsDescendantOf(
+                FightingModel
+            )
+        then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+function AutoBlockController:RefreshCurrentFighterWatchers()
+    local FightingModels =
+        self:GetCurrentFightingModels()
+
+    for _,
+        Model in ipairs(
+            FightingModels
+        )
+    do
+        if Model
+            and Model.Parent
+        then
+            --------------------------------------------------
+            -- Watch replicated combat values on the exact fighting model.
+            --------------------------------------------------
+
+            self:WatchNpcCombatState(
+                Model
+            )
+
+            local Humanoid =
+                Model:FindFirstChildOfClass(
+                    "Humanoid"
+                )
+                or Model:FindFirstChildWhichIsA(
+                    "Humanoid",
+                    true
+                )
+
+            if Humanoid then
+                local EntityModel =
+                    Humanoid.Parent
+
+                if EntityModel
+                    and EntityModel:IsA(
+                        "Model"
+                    )
+                then
+                    self:WatchNpcCombatState(
+                        EntityModel
+                    )
+
+                    self:WatchClientAnimatorState(
+                        EntityModel
+                    )
+                end
+
+                local Animator =
+                    Humanoid:FindFirstChildOfClass(
+                        "Animator"
+                    )
+
+                if Animator then
+                    self:WatchAnimator(
+                        Animator,
+                        EntityModel
+                            or Model
+                    )
+                end
+            end
+        end
+    end
+end
+
+
+function AutoBlockController:GetHeartbeatCombatValues(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return nil
+    end
+
+    ----------------------------------------------------------
+    -- Exact paths observed on spawned NPC entities:
+    --
+    --   Model.Combo.Value
+    --   Model.Combo.Last.Value
+    --   Model.Combo.Time.Value
+    --   Model.ComboCounter.Value
+    --
+    -- Prefer direct children first. Nested search is only a fallback for the
+    -- outer ActiveNpcs container -> inner spawned entity layout.
+    ----------------------------------------------------------
+
+    local Combo =
+        Model:FindFirstChild(
+            "Combo"
+        )
+        or Model:FindFirstChild(
+            "Combo",
+            true
+        )
+
+    local ComboCounter =
+        Model:FindFirstChild(
+            "ComboCounter"
+        )
+        or Model:FindFirstChild(
+            "ComboCounter",
+            true
+        )
+
+    if not Combo
+        and not ComboCounter
+    then
+        return nil
+    end
+
+    local Last =
+        Combo
+        and Combo:FindFirstChild(
+            "Last"
+        )
+
+    local Time =
+        Combo
+        and Combo:FindFirstChild(
+            "Time"
+        )
+
+    local function ReadValue(
+        Object
+    )
+        if not Object then
+            return nil
+        end
+
+        local Success,
+            Value =
+            pcall(function()
+                return Object.Value
+            end)
+
+        if not Success then
+            return nil
+        end
+
+        return Value
+    end
+
+    return {
+        ComboObject = Combo,
+        Combo = ReadValue(
+            Combo
+        ),
+        Last = ReadValue(
+            Last
+        ),
+        Time = ReadValue(
+            Time
+        ),
+        ComboCounter = ReadValue(
+            ComboCounter
+        ),
+    }
+end
+
+
+function AutoBlockController:SendImmediateHeartbeatHold(
+    Model,
+    Reason,
+    HoldWindow
+)
+    if not Model
+        or not Model.Parent
+        or not Settings.AutoBlock
+    then
+        return false
+    end
+
+    local InRange =
+        self:IsNpcThreatInRange(
+            Model
+        )
+
+    if not InRange then
+        return false
+    end
+
+    local Now =
+        os.clock()
+
+    self.HeartbeatThreatModel =
+        Model
+
+    self.HeartbeatThreatUntil =
+        math.max(
+            self.HeartbeatThreatUntil
+                or 0,
+            Now
+                + (
+                    tonumber(
+                        HoldWindow
+                    )
+                    or self.HeartbeatComboHoldWindow
+                )
+        )
+
+    self.LastThreatAt =
+        Now
+
+    Settings.__AutoBlockThreatActive =
+        true
+
+    self.CurrentThreat =
+        Model
+
+    ----------------------------------------------------------
+    -- Heartbeat direct path:
+    -- send Hold immediately on the frame the replicated value changes.
+    ----------------------------------------------------------
+
+    if Now
+        - self.LastImmediateHoldAt
+        >= self.ImmediateHoldMinInterval
+    then
+        self.LastImmediateHoldAt =
+            Now
+
+        local Success =
+            self:SendBlockState(
+                "Hold",
+                Model
+            )
+
+        if Success then
+            self.BlockingRequested =
+                true
+
+            self.LastHoldAt =
+                Now
+        end
+    else
+        self:BeginBlock(
+            Model
+        )
+    end
+
+    HubDebug(
+        "[Combat Hub] Heartbeat Auto Block: "
+            .. tostring(
+                Model.Name
+            )
+            .. " • "
+            .. tostring(
+                Reason
+                    or "combat value changed"
+            )
+    )
+
+    return true
+end
+
+
+function AutoBlockController:PollCurrentFighterCombatValues()
+    local Fighters =
+        self:GetCurrentFightingModels()
+
+    if #Fighters <= 0 then
+        return false,
+            nil
+    end
+
+    local AnyChanged =
+        false
+
+    local ChangedModel =
+        nil
+
+    local SeenSources =
+        {}
+
+    for _,
+        Fighter in ipairs(
+            Fighters
+        )
+    do
+        if Fighter
+            and Fighter.Parent
+        then
+            --------------------------------------------------
+            -- Try both the fighter model and any nested humanoid entity.
+            --------------------------------------------------
+
+            local Candidates = {
+                Fighter,
+            }
+
+            local Humanoid =
+                Fighter:FindFirstChildOfClass(
+                    "Humanoid"
+                )
+                or Fighter:FindFirstChildWhichIsA(
+                    "Humanoid",
+                    true
+                )
+
+            if Humanoid
+                and Humanoid.Parent
+                and Humanoid.Parent:IsA(
+                    "Model"
+                )
+                and Humanoid.Parent ~= Fighter
+            then
+                Candidates[
+                    #Candidates + 1
+                ] =
+                    Humanoid.Parent
+            end
+
+            for _,
+                Model in ipairs(
+                    Candidates
+                )
+            do
+                if not SeenSources[
+                    Model
+                ]
+                then
+                    SeenSources[
+                        Model
+                    ] =
+                        true
+
+                    local Values =
+                        self:GetHeartbeatCombatValues(
+                            Model
+                        )
+
+                    if Values then
+                        local Previous =
+                            self.HeartbeatCombatSnapshots[
+                                Model
+                            ]
+
+                        if not Previous then
+                            -- First sight establishes a baseline only.
+                            self.HeartbeatCombatSnapshots[
+                                Model
+                            ] = {
+                                Combo = Values.Combo,
+                                Last = Values.Last,
+                                Time = Values.Time,
+                                ComboCounter = Values.ComboCounter,
+                            }
+                        else
+                            local ComboChanged =
+                                Values.Combo
+                                    ~= Previous.Combo
+
+                            local LastChanged =
+                                Values.Last
+                                    ~= Previous.Last
+
+                            local TimeChanged =
+                                Values.Time
+                                    ~= Previous.Time
+
+                            local CounterChanged =
+                                Values.ComboCounter
+                                    ~= Previous.ComboCounter
+
+                            --------------------------------------------------
+                            -- Write snapshot BEFORE triggering so another
+                            -- Heartbeat cannot process the same transition.
+                            --------------------------------------------------
+
+                            Previous.Combo =
+                                Values.Combo
+
+                            Previous.Last =
+                                Values.Last
+
+                            Previous.Time =
+                                Values.Time
+
+                            Previous.ComboCounter =
+                                Values.ComboCounter
+
+                            --------------------------------------------------
+                            -- MAIN SIGNAL ORDER:
+                            -- 1) Combo.Value
+                            -- 2) Combo.Last.Value
+                            -- 3) Combo.Time.Value
+                            -- 4) ComboCounter.Value
+                            --------------------------------------------------
+
+                            local Reason =
+                                nil
+
+                            local Window =
+                                self.HeartbeatComboHoldWindow
+
+                            if ComboChanged then
+                                Reason =
+                                    "Combo "
+                                    .. tostring(
+                                        Values.Combo
+                                    )
+
+                            elseif LastChanged then
+                                Reason =
+                                    "Combo.Last "
+                                    .. tostring(
+                                        Values.Last
+                                    )
+
+                            elseif TimeChanged then
+                                Reason =
+                                    "Combo.Time "
+                                    .. tostring(
+                                        Values.Time
+                                    )
+
+                            elseif CounterChanged then
+                                Reason =
+                                    "ComboCounter "
+                                    .. tostring(
+                                        Values.ComboCounter
+                                    )
+
+                                Window =
+                                    self.HeartbeatCounterHoldWindow
+                            end
+
+                            if Reason then
+                                AnyChanged =
+                                    true
+
+                                ChangedModel =
+                                    Model
+
+                                self:SendImmediateHeartbeatHold(
+                                    Model,
+                                    Reason,
+                                    Window
+                                )
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return AnyChanged,
+        ChangedModel
 end
 
 
@@ -19481,7 +20215,6 @@ function AutoBlockController:IsFollowingPlayer(
 
     return false
 end
-
 
 function AutoBlockController:IsNpcFacingPlayer(
     Model,
@@ -19733,12 +20466,1233 @@ function AutoBlockController:IsNpcAggroedToUs(
         return false
     end
 
+    ----------------------------------------------------------
+    -- The supplied Following.Set source shows the exact target is recorded
+    -- under THAT target character's NpcsFollowing folder as an ObjectValue.
+    --
+    -- Entity:GetAttribute("Aggroed") only means the NPC has some target,
+    -- which can be another player, so do not use it as sufficient proof.
+    ----------------------------------------------------------
+
     return self:IsFollowingPlayer(
         Model
     )
-        or Model:GetAttribute(
+end
+
+function AutoBlockController:GetWorldPosition(
+    Object
+)
+    if not Object
+        or not Object.Parent
+    then
+        return nil
+    end
+
+    if Object:IsA(
+        "BasePart"
+    )
+    then
+        return Object.Position
+    end
+
+    if Object:IsA(
+        "Attachment"
+    )
+    then
+        return Object.WorldPosition
+    end
+
+    if Object:IsA(
+        "Model"
+    )
+    then
+        local Success,
+            Pivot =
+            pcall(
+                Object.GetPivot,
+                Object
+            )
+
+        if Success then
+            return Pivot.Position
+        end
+    end
+
+    local Part =
+        Object:FindFirstChildWhichIsA(
+            "BasePart",
+            true
+        )
+
+    if Part then
+        return Part.Position
+    end
+
+    local Attachment =
+        Object:FindFirstChildWhichIsA(
+            "Attachment",
+            true
+        )
+
+    return Attachment
+        and Attachment.WorldPosition
+        or nil
+end
+
+
+function AutoBlockController:IsThreatLikeDebreeName(
+    Object
+)
+    if not Object then
+        return false
+    end
+
+    local Pieces = {
+        tostring(
+            Object.Name
+            or ""
+        ),
+    }
+
+    local Parent =
+        Object.Parent
+
+    if Parent
+        and Parent ~= workspace
+    then
+        Pieces[
+            #Pieces + 1
+        ] =
+            tostring(
+                Parent.Name
+                or ""
+            )
+    end
+
+    local Text =
+        string.lower(
+            table.concat(
+                Pieces,
+                " "
+            )
+        )
+
+    for _,
+        Word in ipairs(
+            self.VfxThreatWords
+        )
+    do
+        if string.find(
+            Text,
+            Word,
+            1,
+            true
+        )
+        then
+            return true
+        end
+    end
+
+    return false
+end
+
+
+function AutoBlockController:FindBestTargetingNpcNearPosition(
+    Position
+)
+    if typeof(
+        Position
+    ) ~= "Vector3"
+    then
+        return nil
+    end
+
+    local Best =
+        nil
+
+    local BestDistance =
+        math.huge
+
+    local function Consider(
+        Model
+    )
+        if not Model
+            or not Model.Parent
+            or not self:IsDirectThreatTargetingUs(
+                Model
+            )
+            or self:IsNpcBlocking(
+                Model
+            )
+        then
+            return
+        end
+
+        local Root =
+            self:GetNpcRoot(
+                Model
+            )
+
+        if not Root then
+            return
+        end
+
+        local Distance =
+            (
+                Root.Position
+                - Position
+            ).Magnitude
+
+        if Distance
+            <= self.DebreeAssociationRange
+            and Distance
+                < BestDistance
+        then
+            BestDistance =
+                Distance
+
+            Best =
+                Model
+        end
+    end
+
+    for Model in pairs(
+        self.NpcCombatStateWatchers
+    )
+    do
+        Consider(
+            Model
+        )
+    end
+
+    for _,
+        Info in pairs(
+            self.Watchers
+        )
+    do
+        Consider(
+            Info.Model
+        )
+    end
+
+    return Best
+end
+
+
+function AutoBlockController:ConsiderDebreeThreat(
+    Object
+)
+    if not HubRunning
+        or not Settings.AutoBlock
+        or not Object
+        or not Object.Parent
+        or not self:IsThreatLikeDebreeName(
+            Object
+        )
+    then
+        return false
+    end
+
+    local Position =
+        self:GetWorldPosition(
+            Object
+        )
+
+    if not Position then
+        return false
+    end
+
+    local _,
+        PlayerRoot =
+        self:GetCharacterRoot()
+
+    if not PlayerRoot then
+        return false
+    end
+
+    local PlayerDistance =
+        (
+            Position
+            - PlayerRoot.Position
+        ).Magnitude
+
+    if PlayerDistance
+        > self.DebreeThreatRange
+    then
+        return false
+    end
+
+    ----------------------------------------------------------
+    -- Do not block from Debree alone. Require a nearby NPC that is actually
+    -- targeting us (or meets the strict direct-state replication fallback).
+    ----------------------------------------------------------
+
+    local ThreatModel =
+        self:FindBestTargetingNpcNearPosition(
+            Position
+        )
+
+    if not ThreatModel then
+        return false
+    end
+
+    self.RecentDebreeThreatUntil =
+        os.clock()
+        + self.DebreeThreatWindow
+
+    self.RecentDebreeThreatModel =
+        ThreatModel
+
+    self:MarkDirectThreat(
+        ThreatModel,
+        self.DebreeThreatWindow,
+        "Debree:"
+            .. tostring(
+                Object.Name
+            )
+    )
+
+    return true
+end
+
+
+function AutoBlockController:BindDebreeWatcher()
+    if self.DebreeConnection then
+        self.DebreeConnection:Disconnect()
+
+        self.DebreeConnection =
+            nil
+    end
+
+    local Debree =
+        workspace:FindFirstChild(
+            "Debree"
+        )
+
+    if not Debree then
+        return
+    end
+
+    self.DebreeConnection =
+        Debree.DescendantAdded:Connect(function(Object)
+            if not HubRunning
+                or not Settings.AutoBlock
+            then
+                return
+            end
+
+            -- Let model/part parenting settle so GetPivot / BasePart lookup
+            -- has a chance to resolve its actual world location.
+            task.defer(function()
+                if Object
+                    and Object.Parent
+                then
+                    self:ConsiderDebreeThreat(
+                        Object
+                    )
+                end
+            end)
+        end)
+end
+
+
+function AutoBlockController:IsAnimationThreatTargetingUs(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    -- Exact game-owned target link when replicated.
+    if self:IsFollowingPlayer(
+        Model
+    )
+    then
+        return true
+    end
+
+    ----------------------------------------------------------
+    -- Fallback for NPCs whose NpcsFollowing ObjectValue arrives late:
+    -- require Aggroed + close enough + facing us.
+    ----------------------------------------------------------
+
+    if Model:GetAttribute(
+        "Aggroed"
+    ) ~= true
+    then
+        return false
+    end
+
+    local _,
+        PlayerRoot =
+        self:GetCharacterRoot()
+
+    local NpcRoot =
+        self:GetNpcRoot(
+            Model
+        )
+
+    if not PlayerRoot
+        or not NpcRoot
+    then
+        return false
+    end
+
+    local Distance =
+        (
+            NpcRoot.Position
+            - PlayerRoot.Position
+        ).Magnitude
+
+    if Distance
+        > self.AnimationThreatRange
+    then
+        return false
+    end
+
+    local Facing =
+        self:IsNpcFacingPlayer(
+            Model,
+            NpcRoot,
+            PlayerRoot
+        )
+
+    return Facing == true
+end
+
+
+function AutoBlockController:IsCurrentComboThreatRelevant(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    ----------------------------------------------------------
+    -- FIRST PRIORITY:
+    -- NpcsFollowing is written by the game's Following.Set logic and points
+    -- at the NPC(s) actually fighting the local character.
+    ----------------------------------------------------------
+
+    if self:IsCurrentFightingModel(
+        Model
+    )
+    then
+        return true
+    end
+
+    local _,
+        PlayerRoot =
+        self:GetCharacterRoot()
+
+    local NpcRoot =
+        self:GetNpcRoot(
+            Model
+        )
+
+    if not PlayerRoot
+        or not NpcRoot
+    then
+        return false
+    end
+
+    local Distance =
+        (
+            NpcRoot.Position
+            - PlayerRoot.Position
+        ).Magnitude
+
+    if Distance
+        > self.AnimationThreatRange
+    then
+        return false
+    end
+
+    ----------------------------------------------------------
+    -- Replication fallback only if NpcsFollowing has not arrived yet.
+    ----------------------------------------------------------
+
+    local Aggroed =
+        Model:GetAttribute(
             "Aggroed"
         ) == true
+
+    if not Aggroed then
+        for _,
+            Descendant in ipairs(
+                Model:GetDescendants()
+            )
+        do
+            if (
+                Descendant:IsA(
+                    "Model"
+                )
+                or Descendant:IsA(
+                    "BasePart"
+                )
+            )
+                and Descendant:GetAttribute(
+                    "Aggroed"
+                ) == true
+            then
+                Aggroed =
+                    true
+
+                break
+            end
+        end
+    end
+
+    if not Aggroed then
+        return false
+    end
+
+    if Distance <= 12 then
+        return true
+    end
+
+    return self:IsNpcFacingPlayer(
+        Model,
+        NpcRoot,
+        PlayerRoot
+    ) == true
+end
+
+function AutoBlockController:MarkCurrentComboThreat(
+    Model,
+    Reason,
+    Duration
+)
+    if not HubRunning
+        or not Settings.AutoBlock
+        or not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    local InRange =
+        self:IsNpcThreatInRange(
+            Model
+        )
+
+    if not InRange
+        or self:IsNpcBlocking(
+            Model
+        )
+        or not self:IsCurrentComboThreatRelevant(
+            Model
+        )
+    then
+        return false
+    end
+
+    local Now =
+        os.clock()
+
+    self.RecentDirectThreatUntil[
+        Model
+    ] =
+        math.max(
+            self.RecentDirectThreatUntil[
+                Model
+            ]
+                or 0,
+            Now
+                + (
+                    tonumber(
+                        Duration
+                    )
+                    or self.CurrentComboIdThreatWindow
+                )
+        )
+
+    self.LastThreatAt =
+        Now
+
+    Settings.__AutoBlockThreatActive =
+        true
+
+    self.CurrentThreat =
+        Model
+
+    ----------------------------------------------------------
+    -- PERFECT-PARRY-STYLE FAST PATH:
+    --
+    -- A fresh Combo / Combo.Time / currentcomboid transition bypasses the
+    -- normal Hold retry timer and sends Hold right now.
+    --
+    -- The tiny per-frame guard only prevents duplicate signals (for example
+    -- Combo and Combo.Time changing together) from firing multiple Hold
+    -- requests on the same scheduler slice.
+    ----------------------------------------------------------
+
+    local ImmediateSuccess =
+        false
+
+    if Now
+        - self.LastImmediateHoldAt
+        >= self.ImmediateHoldMinInterval
+    then
+        self.LastImmediateHoldAt =
+            Now
+
+        ImmediateSuccess =
+            self:SendBlockState(
+                "Hold",
+                Model
+            )
+
+        if ImmediateSuccess then
+            self.BlockingRequested =
+                true
+
+            self.LastHoldAt =
+                Now
+        end
+    end
+
+    if not ImmediateSuccess then
+        -- Normal retry path if the immediate request was same-frame gated or
+        -- failed for any reason.
+        self:BeginBlock(
+            Model
+        )
+    end
+
+    HubDebug(
+        "[Combat Hub] Auto Block combo-state threat: "
+            .. tostring(
+                Model.Name
+            )
+            .. " • "
+            .. tostring(
+                Reason
+                    or "currentcomboid"
+            )
+    )
+
+    return true
+end
+
+function AutoBlockController:IsDirectThreatTargetingUs(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    -- Strong/authoritative signal from the game's Following.Set logic.
+    if self:IsFollowingPlayer(
+        Model
+    )
+    then
+        return true
+    end
+
+    ----------------------------------------------------------
+    -- Replication fallback:
+    -- Entity.Aggroed only proves the NPC has a target, not WHICH target.
+    -- Therefore only trust it for direct Combo / Choosing states if the NPC
+    -- is close enough and physically facing our character.
+    ----------------------------------------------------------
+
+    if Model:GetAttribute(
+        "Aggroed"
+    ) ~= true
+    then
+        return false
+    end
+
+    local _,
+        PlayerRoot =
+        self:GetCharacterRoot()
+
+    local NpcRoot =
+        self:GetNpcRoot(
+            Model
+        )
+
+    if not PlayerRoot
+        or not NpcRoot
+    then
+        return false
+    end
+
+    local Distance =
+        (
+            NpcRoot.Position
+            - PlayerRoot.Position
+        ).Magnitude
+
+    if Distance
+        > self.DirectAggroFallbackRange
+    then
+        return false
+    end
+
+    local Facing =
+        self:IsNpcFacingPlayer(
+            Model,
+            NpcRoot,
+            PlayerRoot
+        )
+
+    return Facing == true
+end
+
+
+function AutoBlockController:IsNpcBlocking(
+    Model
+)
+    if not Model
+        or not Model.Parent
+    then
+        return false
+    end
+
+    local Blocking =
+        Model:FindFirstChild(
+            "Blocking",
+            true
+        )
+
+    return Blocking
+        ~= nil
+end
+
+
+function AutoBlockController:IsChoosingStateName(
+    Name
+)
+    local Text =
+        string.lower(
+            tostring(
+                Name
+                or ""
+            )
+        )
+
+    return Text == "choosing"
+        or string.sub(
+            Text,
+            1,
+            9
+        ) == "choosing_"
+end
+
+
+function AutoBlockController:MarkDirectThreat(
+    Model,
+    Duration,
+    Reason
+)
+    if not HubRunning
+        or not Settings.AutoBlock
+        or not Model
+        or not Model.Parent
+        or not self:IsDirectThreatTargetingUs(
+            Model
+        )
+    then
+        return false
+    end
+
+    local InRange =
+        self:IsNpcThreatInRange(
+            Model
+        )
+
+    if not InRange then
+        return false
+    end
+
+    -- NPC-side Blocking is defensive, not an incoming attack.
+    if self:IsNpcBlocking(
+        Model
+    )
+    then
+        return false
+    end
+
+    local Now =
+        os.clock()
+
+    self.RecentDirectThreatUntil[
+        Model
+    ] =
+        math.max(
+            self.RecentDirectThreatUntil[
+                Model
+            ]
+                or 0,
+            Now
+                + (
+                    tonumber(
+                        Duration
+                    )
+                    or self.ComboThreatWindow
+                )
+        )
+
+    ----------------------------------------------------------
+    -- IMPORTANT:
+    -- Direct state changes should block immediately. Do not wait for an
+    -- Animator scan / next watcher refresh.
+    ----------------------------------------------------------
+
+    self.LastThreatAt =
+        Now
+
+    Settings.__AutoBlockThreatActive =
+        true
+
+    self.CurrentThreat =
+        Model
+
+    self:BeginBlock(
+        Model
+    )
+
+    HubDebug(
+        "[Combat Hub] Auto Block direct threat: "
+            .. tostring(
+                Model.Name
+            )
+            .. " • "
+            .. tostring(
+                Reason
+                or "state"
+            )
+    )
+
+    return true
+end
+
+function AutoBlockController:WatchNpcCombatState(
+    Model
+)
+    if not Model
+        or not Model.Parent
+        or self.NpcCombatStateWatchers[
+            Model
+        ]
+    then
+        return
+    end
+
+    local Info = {
+        Connections = {},
+        ValueConnections = {},
+        LastCombo = nil,
+        LastComboTime = nil,
+        LastRegisteredCombo = nil,
+        LastCurrentComboId = nil,
+        LastComboCounter = nil,
+    }
+
+    local function DisconnectValueWatcher(
+        Object
+    )
+        local Connection =
+            Info.ValueConnections[
+                Object
+            ]
+
+        if Connection then
+            Connection:Disconnect()
+
+            Info.ValueConnections[
+                Object
+            ] =
+                nil
+        end
+    end
+
+    local function WatchNumericValue(
+        Object
+    )
+        if not Object
+            or Info.ValueConnections[
+                Object
+            ]
+        then
+            return
+        end
+
+        if not (
+            Object:IsA(
+                "IntValue"
+            )
+            or Object:IsA(
+                "NumberValue"
+            )
+        )
+        then
+            return
+        end
+
+        local Name =
+            Object.Name
+
+        if Name == "Combo" then
+            Info.LastCombo =
+                tonumber(
+                    Object.Value
+                )
+
+            Info.ValueConnections[
+                Object
+            ] =
+                Object:GetPropertyChangedSignal(
+                    "Value"
+                ):Connect(function()
+                    local New =
+                        tonumber(
+                            Object.Value
+                        )
+
+                    local Old =
+                        Info.LastCombo
+
+                    Info.LastCombo =
+                        New
+
+                    -- Combo.Value is a strong active-attack signal.
+                    if New ~= Old then
+                        self:MarkCurrentComboThreat(
+                            Model,
+                            "Combo "
+                                .. tostring(
+                                    Old
+                                )
+                                .. " -> "
+                                .. tostring(
+                                    New
+                                ),
+                            self.ComboValueThreatWindow
+                        )
+                    end
+                end)
+
+            --------------------------------------------------
+            -- Combo.Time is nested under Combo and changes while the NPC is
+            -- attacking. Watch it independently as a fallback/confirmation.
+            --------------------------------------------------
+
+            local TimeValue =
+                Object:FindFirstChild(
+                    "Time"
+                )
+
+            local function WatchComboTime(
+                Child
+            )
+                if not Child
+                    or Child.Name ~= "Time"
+                    or not (
+                        Child:IsA(
+                            "IntValue"
+                        )
+                        or Child:IsA(
+                            "NumberValue"
+                        )
+                    )
+                    or Info.ValueConnections[
+                        Child
+                    ]
+                then
+                    return
+                end
+
+                Info.LastComboTime =
+                    tonumber(
+                        Child.Value
+                    )
+
+                Info.ValueConnections[
+                    Child
+                ] =
+                    Child:GetPropertyChangedSignal(
+                        "Value"
+                    ):Connect(function()
+                        local NewTime =
+                            tonumber(
+                                Child.Value
+                            )
+
+                        local OldTime =
+                            Info.LastComboTime
+
+                        Info.LastComboTime =
+                            NewTime
+
+                        if NewTime ~= OldTime then
+                            self:MarkCurrentComboThreat(
+                                Model,
+                                "Combo.Time "
+                                    .. tostring(
+                                        OldTime
+                                    )
+                                    .. " -> "
+                                    .. tostring(
+                                        NewTime
+                                    ),
+                                self.ComboTimeThreatWindow
+                            )
+                        end
+                    end)
+            end
+
+            WatchComboTime(
+                TimeValue
+            )
+
+            table.insert(
+                Info.Connections,
+                Object.ChildAdded:Connect(
+                    WatchComboTime
+                )
+            )
+
+        elseif Name == "LastRegisteredCombo" then
+            Info.LastRegisteredCombo =
+                tonumber(
+                    Object.Value
+                )
+
+            local function RegisteredChanged()
+                local New =
+                    tonumber(
+                        Object.Value
+                    )
+
+                local Old =
+                    Info.LastRegisteredCombo
+
+                Info.LastRegisteredCombo =
+                    New
+
+                if New ~= Old then
+                    self:MarkDirectThreat(
+                        Model,
+                        self.RegisteredComboThreatWindow,
+                        "LastRegisteredCombo "
+                            .. tostring(
+                                Old
+                            )
+                            .. " -> "
+                            .. tostring(
+                                New
+                            )
+                    )
+                end
+            end
+
+            Info.ValueConnections[
+                Object
+            ] =
+                Object:GetPropertyChangedSignal(
+                    "Value"
+                ):Connect(
+                    RegisteredChanged
+                )
+
+            -- User screenshot shows a "Last" attribute on this value.
+            table.insert(
+                Info.Connections,
+                Object:GetAttributeChangedSignal(
+                    "Last"
+                ):Connect(function()
+                    self:MarkDirectThreat(
+                        Model,
+                        self.RegisteredComboThreatWindow,
+                        "LastRegisteredCombo.Last"
+                    )
+                end)
+            )
+
+        elseif Name == "currentcomboid" then
+            Info.LastCurrentComboId =
+                tonumber(
+                    Object.Value
+                )
+
+            Info.ValueConnections[
+                Object
+            ] =
+                Object:GetPropertyChangedSignal(
+                    "Value"
+                ):Connect(function()
+                    local New =
+                        tonumber(
+                            Object.Value
+                        )
+
+                    local Old =
+                        Info.LastCurrentComboId
+
+                    Info.LastCurrentComboId =
+                        New
+
+                    if New ~= Old then
+                        self:MarkCurrentComboThreat(
+                            Model,
+                            "currentcomboid "
+                                .. tostring(
+                                    Old
+                                )
+                                .. " -> "
+                                .. tostring(
+                                    New
+                                ),
+                            self.CurrentComboIdThreatWindow
+                        )
+                    end
+                end)
+
+        elseif Name == "ComboCounter" then
+            Info.LastComboCounter =
+                tonumber(
+                    Object.Value
+                )
+
+            Info.ValueConnections[
+                Object
+            ] =
+                Object:GetPropertyChangedSignal(
+                    "Value"
+                ):Connect(function()
+                    local New =
+                        tonumber(
+                            Object.Value
+                        )
+
+                    local Old =
+                        Info.LastComboCounter
+
+                    Info.LastComboCounter =
+                        New
+
+                    -- Post-hit recovery only: if the counter increases, hold
+                    -- briefly to catch the remaining hits in the chain.
+                    if New
+                        and Old
+                        and New > Old
+                    then
+                        self:MarkCurrentComboThreat(
+                            Model,
+                            "ComboCounter "
+                                .. tostring(
+                                    Old
+                                )
+                                .. " -> "
+                                .. tostring(
+                                    New
+                                ),
+                            self.ComboCounterRecoveryWindow
+                        )
+                    end
+                end)
+        end
+    end
+
+    local function ConsiderObject(
+        Object,
+        Added
+    )
+        if not Object then
+            return
+        end
+
+        if Object.Name == "Combo"
+            or Object.Name == "LastRegisteredCombo"
+            or Object.Name == "currentcomboid"
+            or Object.Name == "ComboCounter"
+        then
+            WatchNumericValue(
+                Object
+            )
+
+            return
+        end
+
+        if self:IsChoosingStateName(
+            Object.Name
+        ) then
+            if Added ~= false then
+                self:MarkDirectThreat(
+                    Model,
+                    self.ChoosingThreatWindow,
+                    Object.Name
+                )
+            end
+
+            return
+        end
+
+        if Object.Name == "Blocking" then
+            --------------------------------------------------
+            -- NPC is defending. Drop stale direct/animation windows so we
+            -- don't hold block just because a prior combo signal lingered.
+            --------------------------------------------------
+
+            if Added ~= false then
+                self.RecentDirectThreatUntil[
+                    Model
+                ] =
+                    nil
+
+                self.RecentAnimThreatUntil[
+                    Model
+                ] =
+                    nil
+            end
+
+            return
+        end
+    end
+
+    for _,
+        Descendant in ipairs(
+            Model:GetDescendants()
+        )
+    do
+        ConsiderObject(
+            Descendant,
+            false
+        )
+    end
+
+    table.insert(
+        Info.Connections,
+        Model.DescendantAdded:Connect(function(Object)
+            ConsiderObject(
+                Object,
+                true
+            )
+        end)
+    )
+
+    table.insert(
+        Info.Connections,
+        Model.DescendantRemoving:Connect(function(Object)
+            DisconnectValueWatcher(
+                Object
+            )
+        end)
+    )
+
+    self.NpcCombatStateWatchers[
+        Model
+    ] =
+        Info
 end
 
 
@@ -19937,7 +21891,10 @@ function AutoBlockController:IsAttackTrack(
             Track
         )
 
-    -- Track-level movement/evasion names always win.
+    ----------------------------------------------------------
+    -- Movement / idle / defensive animation names never count.
+    ----------------------------------------------------------
+
     for _,
         Word in ipairs(
             self.IgnoreWords
@@ -19948,29 +21905,25 @@ function AutoBlockController:IsAttackTrack(
             Word,
             1,
             true
-        ) then
+        )
+        then
             return false
         end
     end
 
-    -- Also reject the Action-priority fallback if the NPC's replicated
-    -- CurrentAnim says it is dashing/dodging/rolling/etc. This catches
-    -- cases where the Roblox AnimationTrack itself has a generic name.
-    local CurrentAnimName =
-        self:GetCurrentAnimName(
-            Model
-        )
-
-    local CurrentAnimIgnored =
-        self:IsIgnoredAnimationName(
-            CurrentAnimName
-        )
-
-    if CurrentAnimIgnored then
+    -- If the NPC itself is visibly Blocking, don't interpret that as an
+    -- incoming swing.
+    if self:IsNpcBlocking(
+        Model
+    )
+    then
         return false
     end
 
-    -- Strongest signal: descriptive attack/skill name.
+    ----------------------------------------------------------
+    -- Strong signal: descriptive attack name.
+    ----------------------------------------------------------
+
     for _,
         Word in ipairs(
             self.AttackWords
@@ -19981,15 +21934,18 @@ function AutoBlockController:IsAttackTrack(
             Word,
             1,
             true
-        ) then
+        )
+        then
             return true
         end
     end
 
-    -- Many NPC attacks use generic Animation instances, so their Track.Name
-    -- and Animation.Name contain no useful "attack" word. Restore Roblox
-    -- Action-priority detection ONLY for an NPC that is actually targeting
-    -- the local player, after all movement/evasion filters above passed.
+    ----------------------------------------------------------
+    -- Main fallback:
+    -- NPC attacks often have generic track names. If the NPC is actually
+    -- targeting us, treat Action-priority and higher animations as attacks.
+    ----------------------------------------------------------
+
     if IsTargetingPlayer then
         local Priority =
             Track.Priority
@@ -20006,7 +21962,6 @@ function AutoBlockController:IsAttackTrack(
 
     return false
 end
-
 
 function AutoBlockController:GetBlockPosition(
     ThreatModel
@@ -20106,29 +22061,23 @@ function AutoBlockController:BeginBlock(
         ThreatModel
         or self.CurrentThreat
 
-    -- If server replication already says we are blocking, don't keep
-    -- repeating Hold every frame.
-    if self:IsServerBlocking() then
-        self.BlockingRequested =
-            true
-
-        return true
-    end
+    ----------------------------------------------------------
+    -- Do NOT use the replicated Blocking points object as proof that Hold
+    -- is already active.
+    --
+    -- While an attack animation remains active, resend Hold at the retry
+    -- interval. This makes Auto Block recover if a Hold request is dropped
+    -- or the game briefly clears the input state.
+    ----------------------------------------------------------
 
     local Now =
         os.clock()
 
-    if self.BlockingRequested
-        and Now - self.LastHoldAt
-            < self.HoldRetryInterval
-    then
-        return true
-    end
-
-    if Now - self.LastHoldAt
+    if Now
+        - self.LastHoldAt
         < self.HoldRetryInterval
     then
-        return false
+        return self.BlockingRequested
     end
 
     self.LastHoldAt =
@@ -20148,16 +22097,11 @@ function AutoBlockController:BeginBlock(
     return Success
 end
 
-
 function AutoBlockController:EndBlock(
     Force
 )
-    local ActualBlocking =
-        self:IsServerBlocking()
-
     if not Force
         and not self.BlockingRequested
-        and not ActualBlocking
     then
         return true
     end
@@ -20166,7 +22110,8 @@ function AutoBlockController:EndBlock(
         os.clock()
 
     if not Force
-        and Now - self.LastReleaseAt
+        and Now
+            - self.LastReleaseAt
             < self.ReleaseRetryInterval
     then
         return false
@@ -20193,7 +22138,6 @@ function AutoBlockController:EndBlock(
 
     return Success
 end
-
 
 function AutoBlockController:MarkThreat(
     Model
@@ -20254,42 +22198,77 @@ function AutoBlockController:WatchAnimator(
             function(Track)
                 if not HubRunning
                     or not Settings.AutoBlock
+                    or not Track
+                    or not Model.Parent
                 then
                     return
                 end
 
-                -- Animation priority can be assigned on the same frame that
-                -- AnimationPlayed fires. Check immediately and once again
-                -- next scheduler slice.
-                local function Check()
-                    if not Track
-                        or not Track.IsPlaying
+                local function CheckStartedTrack()
+                    if not HubRunning
+                        or not Settings.AutoBlock
                         or not Model.Parent
+                        or not Track
+                        or not Track.IsPlaying
                     then
                         return
                     end
 
-                    local TargetingPlayer =
-                        self:IsNpcAggroedToUs(
+                    local InRange =
+                        self:IsNpcThreatInRange(
                             Model
                         )
 
+                    if not InRange then
+                        return
+                    end
+
+                    local Targeting =
+                        self:IsAnimationThreatTargetingUs(
+                            Model
+                        )
+
+                    if not Targeting then
+                        return
+                    end
+
                     if self:IsAttackTrack(
                         Track,
-                        TargetingPlayer,
+                        true,
                         Model
                     )
                     then
-                        self:MarkThreat(
+                        local Now =
+                            os.clock()
+
+                        self.RecentAnimThreatUntil[
+                            Model
+                        ] =
+                            Now
+                            + self.AnimationStartWindow
+
+                        self.LastThreatAt =
+                            Now
+
+                        Settings.__AutoBlockThreatActive =
+                            true
+
+                        self.CurrentThreat =
+                            Model
+
+                        -- Immediate Hold on animation start.
+                        self:BeginBlock(
                             Model
                         )
                     end
                 end
 
-                Check()
+                -- Check immediately and once again next scheduler slice,
+                -- because Priority/IsPlaying can finalize a frame later.
+                CheckStartedTrack()
 
                 task.defer(
-                    Check
+                    CheckStartedTrack
                 )
             end
         )
@@ -20300,8 +22279,55 @@ function AutoBlockController:WatchAnimator(
         Info
 end
 
-
 function AutoBlockController:RefreshWatchers()
+    if not self.DebreeConnection then
+        self:BindDebreeWatcher()
+    end
+
+    -- Clean dead direct replicated combat-state watchers first.
+    for Model,
+        Info in pairs(
+            self.NpcCombatStateWatchers
+        )
+    do
+        if not Model
+            or not Model.Parent
+        then
+            for _,
+                Connection in ipairs(
+                    Info.Connections
+                    or {}
+                )
+            do
+                Connection:Disconnect()
+            end
+
+            for Object,
+                Connection in pairs(
+                    Info.ValueConnections
+                    or {}
+                )
+            do
+                Connection:Disconnect()
+
+                Info.ValueConnections[
+                    Object
+                ] =
+                    nil
+            end
+
+            self.NpcCombatStateWatchers[
+                Model
+            ] =
+                nil
+
+            self.RecentDirectThreatUntil[
+                Model
+            ] =
+                nil
+        end
+    end
+
     -- Clean dead replicated CurrentAnim watchers first.
     for Model,
         Info in pairs(
@@ -20376,6 +22402,26 @@ function AutoBlockController:RefreshWatchers()
 
         if not Model then
             return
+        end
+
+        self:WatchNpcCombatState(
+            Model
+        )
+
+        -- Some bosses are nested as ActiveNpcs.BossName.BossName. If combat
+        -- marker values live on the outer container, watch that too.
+        local ParentModel =
+            Model.Parent
+
+        if ParentModel
+            and ParentModel:IsA(
+                "Model"
+            )
+            and ParentModel ~= workspace
+        then
+            self:WatchNpcCombatState(
+                ParentModel
+            )
         end
 
         self:WatchClientAnimatorState(
@@ -20473,6 +22519,45 @@ function AutoBlockController:FindActiveThreat()
         return nil
     end
 
+    local CurrentFighters =
+        self:GetCurrentFightingModels()
+
+    local HasCurrentFighters =
+        #CurrentFighters > 0
+
+    local function IsRelevantFighter(
+        Model
+    )
+        if not HasCurrentFighters then
+            return true
+        end
+
+        for _,
+            Fighter in ipairs(
+                CurrentFighters
+            )
+        do
+            if Fighter == Model
+                or Fighter:IsDescendantOf(
+                    Model
+                )
+                or Model:IsDescendantOf(
+                    Fighter
+                )
+            then
+                return true
+            end
+        end
+
+        return false
+    end
+
+    ----------------------------------------------------------
+    -- PRIMARY:
+    -- Scan every watched NPC Animator and keep blocking while ANY qualifying
+    -- attack animation is actively playing.
+    ----------------------------------------------------------
+
     for Animator,
         Info in pairs(
             self.Watchers
@@ -20485,6 +22570,12 @@ function AutoBlockController:FindActiveThreat()
             and Animator.Parent
             and Model
             and Model.Parent
+            and IsRelevantFighter(
+                Model
+            )
+            and not self:IsNpcBlocking(
+                Model
+            )
         then
             local InRange,
                 NpcRoot =
@@ -20494,56 +22585,19 @@ function AutoBlockController:FindActiveThreat()
 
             if InRange
                 and NpcRoot
+                and self:IsAnimationThreatTargetingUs(
+                    Model
+                )
             then
-                local Distance =
-                    (
-                        NpcRoot.Position
-                        - PlayerRoot.Position
-                    ).Magnitude
-
-                local TargetingPlayer =
-                    self:IsNpcAggroedToUs(
-                        Model
-                    )
-
-                local CurrentAnimThreat =
-                    (
-                        self.RecentAnimThreatUntil[
-                            Model
-                        ]
-                        or 0
-                    ) > os.clock()
-
-                local CurrentAnimName =
-                    self:GetCurrentAnimName(
-                        Model
-                    )
-
-                local CurrentAnimIgnored =
-                    self:IsIgnoredAnimationName(
-                        CurrentAnimName
-                    )
-
-                local ObservableSkill =
-                    not CurrentAnimIgnored
-                    and self:IsObservableSkillActive(
-                        Model
-                    )
-                    or false
-
-                local Offensive =
-                    (
-                        not CurrentAnimIgnored
-                        and CurrentAnimThreat
-                    )
-                    or ObservableSkill
-
                 local Success,
                     Tracks =
                     pcall(
                         Animator.GetPlayingAnimationTracks,
                         Animator
                     )
+
+                local AttackPlaying =
+                    false
 
                 if Success
                     and type(
@@ -20557,10 +22611,11 @@ function AutoBlockController:FindActiveThreat()
                     do
                         if self:IsAttackTrack(
                             Track,
-                            TargetingPlayer,
+                            true,
                             Model
-                        ) then
-                            Offensive =
+                        )
+                        then
+                            AttackPlaying =
                                 true
 
                             break
@@ -20568,12 +22623,91 @@ function AutoBlockController:FindActiveThreat()
                     end
                 end
 
-                -- Do NOT block merely because a targeted NPC is close or
-                -- facing us. That used to leave Blocking held continuously,
-                -- which prevented Combat_Service attacks from doing damage.
-                -- NpcsFollowing still improves classification, but an actual
-                -- offensive animation / observable skill must be active.
-                if Offensive then
+                --------------------------------------------------
+                -- Short start-window bridge in case the track briefly drops
+                -- out of GetPlayingAnimationTracks during a transition.
+                --------------------------------------------------
+
+                if not AttackPlaying
+                    and (
+                        self.RecentAnimThreatUntil[
+                            Model
+                        ]
+                        or 0
+                    ) > os.clock()
+                then
+                    AttackPlaying =
+                        true
+                end
+
+                if AttackPlaying then
+                    local Distance =
+                        (
+                            NpcRoot.Position
+                            - PlayerRoot.Position
+                        ).Magnitude
+
+                    if Distance
+                        < BestDistance
+                    then
+                        BestDistance =
+                            Distance
+
+                        BestModel =
+                            Model
+                    end
+                end
+            end
+        end
+    end
+
+    ----------------------------------------------------------
+    -- FALLBACK:
+    -- If an NPC has no usable Animator track but a replicated direct combat
+    -- state fired, retain the previous direct-state path.
+    ----------------------------------------------------------
+
+    if not BestModel then
+        local Now =
+            os.clock()
+
+        for Model in pairs(
+            self.NpcCombatStateWatchers
+        )
+        do
+            if Model
+                and Model.Parent
+                and IsRelevantFighter(
+                    Model
+                )
+                and (
+                    self.RecentDirectThreatUntil[
+                        Model
+                    ]
+                    or 0
+                ) > Now
+                and self:IsDirectThreatTargetingUs(
+                    Model
+                )
+                and not self:IsNpcBlocking(
+                    Model
+                )
+            then
+                local InRange,
+                    NpcRoot =
+                    self:IsNpcThreatInRange(
+                        Model
+                    )
+
+                if InRange
+                    and NpcRoot
+                then
+                    local Distance =
+                        (
+                            NpcRoot.Position
+                            - PlayerRoot.Position
+                        ).Magnitude
+
                     if Distance
                         < BestDistance
                     then
@@ -20591,7 +22725,6 @@ function AutoBlockController:FindActiveThreat()
     return BestModel
 end
 
-
 function AutoBlockController:HeartbeatStep()
     if not HubRunning
         or not Settings.AutoBlock
@@ -20602,6 +22735,67 @@ function AutoBlockController:HeartbeatStep()
     local Now =
         os.clock()
 
+    ----------------------------------------------------------
+    -- PRIMARY DETECTOR:
+    -- poll the current fighter's exact replicated combat values EVERY
+    -- Heartbeat. This runs before watcher refresh and before animations.
+    ----------------------------------------------------------
+
+    self:PollCurrentFighterCombatValues()
+
+    ----------------------------------------------------------
+    -- If one of the four main values changed recently, maintain Hold now.
+    ----------------------------------------------------------
+
+    local HeartbeatThreat =
+        self.HeartbeatThreatModel
+
+    if HeartbeatThreat
+        and HeartbeatThreat.Parent
+        and self.HeartbeatThreatUntil
+            > Now
+    then
+        self.LastThreatAt =
+            Now
+
+        Settings.__AutoBlockThreatActive =
+            true
+
+        self.CurrentThreat =
+            HeartbeatThreat
+
+        self:BeginBlock(
+            HeartbeatThreat
+        )
+
+        return
+    end
+
+    if self.HeartbeatThreatUntil
+        <= Now
+    then
+        self.HeartbeatThreatModel =
+            nil
+    end
+
+    ----------------------------------------------------------
+    -- Keep exact current-fighter watchers attached cheaply.
+    ----------------------------------------------------------
+
+    if Now
+        - self.LastFighterRefresh
+        >= self.FighterRefreshInterval
+    then
+        self.LastFighterRefresh =
+            Now
+
+        self:RefreshCurrentFighterWatchers()
+    end
+
+    ----------------------------------------------------------
+    -- Broader watcher refresh is secondary/fallback only.
+    ----------------------------------------------------------
+
     if Now
         - self.LastWatcherRefresh
         >= self.WatcherRefreshInterval
@@ -20611,6 +22805,11 @@ function AutoBlockController:HeartbeatStep()
 
         self:RefreshWatchers()
     end
+
+    ----------------------------------------------------------
+    -- FALLBACK DETECTOR:
+    -- animation / direct-event system from the working version.
+    ----------------------------------------------------------
 
     local Threat =
         self:FindActiveThreat()
@@ -20625,37 +22824,6 @@ function AutoBlockController:HeartbeatStep()
         self.CurrentThreat =
             Threat
 
-        if Now
-            - self.LastDebugThreatAt
-            >= 0.75
-        then
-            self.LastDebugThreatAt =
-                Now
-
-            local CurrentAnimName =
-                self:GetCurrentAnimName(
-                    Threat
-                )
-
-            HubDebug(
-                "[Combat Hub] Auto Block threat: "
-                    .. tostring(
-                        Threat.Name
-                    )
-                    .. " [targeting="
-                    .. tostring(
-                        self:IsNpcAggroedToUs(
-                            Threat
-                        )
-                    )
-                    .. ", anim="
-                    .. tostring(
-                        CurrentAnimName
-                    )
-                    .. "]"
-            )
-        end
-
         self:BeginBlock(
             Threat
         )
@@ -20663,25 +22831,24 @@ function AutoBlockController:HeartbeatStep()
         return
     end
 
+    ----------------------------------------------------------
+    -- No current exact-value or fallback threat.
+    ----------------------------------------------------------
+
     if Now
         - self.LastThreatAt
         >= self.ReleaseGrace
     then
-        -- Offensive animation is over. Allow Auto Click / Raid to resume
-        -- immediately, then clear the actual Blocking state.
         Settings.__AutoBlockThreatActive =
             false
 
-        if self.BlockingRequested
-            or self:IsServerBlocking()
-        then
+        if self.BlockingRequested then
             self:EndBlock(
                 false
             )
         end
     end
 end
-
 
 function AutoBlockController:Start()
     self.LoopID += 1
@@ -20698,14 +22865,45 @@ function AutoBlockController:Start()
     self.LastHoldAt =
         0
 
+    self.LastImmediateHoldAt =
+        0
+
     self.LastReleaseAt =
         0
 
     self.LastWatcherRefresh =
         0
 
+    self.LastFighterRefresh =
+        0
+
     self.LastDebugThreatAt =
         0
+
+    table.clear(
+        self.RecentDirectThreatUntil
+    )
+
+    table.clear(
+        self.HeartbeatCombatSnapshots
+    )
+
+    self.HeartbeatThreatUntil =
+        0
+
+    self.HeartbeatThreatModel =
+        nil
+
+    self.RecentDebreeThreatUntil =
+        0
+
+    self.RecentDebreeThreatModel =
+        nil
+
+    self:BindDebreeWatcher()
+
+    -- Attach the NPC(s) actually targeting us before the broader scan.
+    self:RefreshCurrentFighterWatchers()
 
     self:RefreshWatchers()
 
@@ -20752,9 +22950,71 @@ function AutoBlockController:Stop()
             nil
     end
 
+    if self.DebreeConnection then
+        self.DebreeConnection:Disconnect()
+
+        self.DebreeConnection =
+            nil
+    end
+
+    self.RecentDebreeThreatUntil =
+        0
+
+    self.RecentDebreeThreatModel =
+        nil
+
+    table.clear(
+        self.HeartbeatCombatSnapshots
+    )
+
+    self.HeartbeatThreatUntil =
+        0
+
+    self.HeartbeatThreatModel =
+        nil
+
     self:EndBlock(
         true
     )
+
+    for Model,
+        Info in pairs(
+            self.NpcCombatStateWatchers
+        )
+    do
+        for _,
+            Connection in ipairs(
+                Info.Connections
+                or {}
+            )
+        do
+            Connection:Disconnect()
+        end
+
+        for Object,
+            Connection in pairs(
+                Info.ValueConnections
+                or {}
+            )
+        do
+            Connection:Disconnect()
+
+            Info.ValueConnections[
+                Object
+            ] =
+                nil
+        end
+
+        self.NpcCombatStateWatchers[
+            Model
+        ] =
+            nil
+
+        self.RecentDirectThreatUntil[
+            Model
+        ] =
+            nil
+    end
 
     for Model,
         Info in pairs(
