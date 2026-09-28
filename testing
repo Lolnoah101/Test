@@ -30102,44 +30102,164 @@ local function QueueHollowMoonHubForTeleport()
         return false
     end
 
-    local Source = [=[
-task.wait(1.5)
+    ----------------------------------------------------------
+    -- SELF-PERPETUATING TELEPORT LOADER
+    --
+    -- Important:
+    -- Rayfield restoring a saved toggle does not always execute the toggle
+    -- callback. Therefore the queued loader re-queues ITSELF as soon as the
+    -- next server starts, before loading HollowMoonHub.
+    ----------------------------------------------------------
 
--- The queued entry is now being consumed by this teleport.
+    local Source = [=[
+task.wait(1.25)
+
 getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
 
--- Prevent duplicate stale queued entries from creating several UIs.
-if getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
-    return
-end
-
-getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
-
-pcall(function()
-    local ExistingUnload =
+local function getQueue()
+    local q =
         rawget(
             getgenv(),
-            "__HOLLOWMOON_AUTOCLICK_UNLOAD"
+            "queue_on_teleport"
+        )
+        or rawget(
+            getgenv(),
+            "queueonteleport"
         )
 
-    if type(ExistingUnload) == "function" then
-        pcall(ExistingUnload)
-        task.wait(0.15)
+    if type(q) ~= "function"
+        and type(syn) == "table"
+    then
+        q =
+            syn.queue_on_teleport
     end
 
-    loadstring(
-        game:HttpGet(
-            "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+    return type(q) == "function"
+        and q
+        or nil
+end
+
+local function queueNext()
+    local q =
+        getQueue()
+
+    if not q then
+        return false
+    end
+
+    local nextSource = [==[
+task.wait(1.25)
+
+getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
+
+local function getQueue()
+    local q =
+        rawget(
+            getgenv(),
+            "queue_on_teleport"
         )
-    )()
-end)
+        or rawget(
+            getgenv(),
+            "queueonteleport"
+        )
 
-task.delay(
-    5,
-    function()
-        getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = nil
+    if type(q) ~= "function"
+        and type(syn) == "table"
+    then
+        q =
+            syn.queue_on_teleport
     end
-)
+
+    return type(q) == "function"
+        and q
+        or nil
+end
+
+local q =
+    getQueue()
+
+if q then
+    pcall(
+        q,
+        [[
+task.wait(1.25)
+loadstring(
+    game:HttpGet(
+        "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+    )
+)()
+]]
+    )
+end
+
+if not getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
+    getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
+
+    pcall(function()
+        local ExistingUnload =
+            rawget(
+                getgenv(),
+                "__HOLLOWMOON_AUTOCLICK_UNLOAD"
+            )
+
+        if type(ExistingUnload) == "function" then
+            pcall(ExistingUnload)
+            task.wait(0.15)
+        end
+
+        loadstring(
+            game:HttpGet(
+                "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+            )
+        )()
+    end)
+
+    task.delay(
+        5,
+        function()
+            getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = nil
+        end
+    )
+end
+]==]
+
+    return pcall(
+        q,
+        nextSource
+    )
+end
+
+queueNext()
+
+if not getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
+    getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
+
+    pcall(function()
+        local ExistingUnload =
+            rawget(
+                getgenv(),
+                "__HOLLOWMOON_AUTOCLICK_UNLOAD"
+            )
+
+        if type(ExistingUnload) == "function" then
+            pcall(ExistingUnload)
+            task.wait(0.15)
+        end
+
+        loadstring(
+            game:HttpGet(
+                "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
+            )
+        )()
+    end)
+
+    task.delay(
+        5,
+        function()
+            getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = nil
+        end
+    )
+end
 ]=]
 
     local Success =
@@ -30155,7 +30275,6 @@ task.delay(
 
     return Success
 end
-
 
 local AutoExecuteController = {
     Queued = false,
@@ -30333,7 +30452,7 @@ SettingsRow:CreateToggle({
 
 
 SettingsRow:CreateToggle({
-    name = "Auto Execute on Teleport",
+    name = "Auto Execute",
     value = false,
     flag = "AutoExecuteOnTeleport",
 
@@ -30342,10 +30461,41 @@ SettingsRow:CreateToggle({
             Value
 
         if Value then
-            AutoExecuteController:Enable()
+            local Queued =
+                AutoExecuteController:Enable()
+
+            Toast(
+                "Auto Execute",
+                Queued
+                    and "Queued for future teleports"
+                    or "queue_on_teleport is unavailable"
+            )
         else
             AutoExecuteController:Disable()
+
+            Toast(
+                "Auto Execute",
+                "Disabled for future queues"
+            )
         end
+    end,
+})
+
+
+SettingsTab:CreateButton({
+    name = "Test Teleport Queue",
+    callback = function()
+        local QueueFunction =
+            GetTeleportQueueFunction()
+
+        Toast(
+            "Teleport Queue",
+            type(
+                QueueFunction
+            ) == "function"
+                and "Supported by executor"
+                or "Not supported by executor"
+        )
     end,
 })
 
@@ -30539,9 +30689,6 @@ local function UnloadHub()
     DestroyRayfieldWindow()
 end
 
-
-getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD = nil
-end
 
 getgenv().__HOLLOWMOON_AUTOCLICK_UNLOAD =
     UnloadHub
