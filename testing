@@ -641,12 +641,24 @@ local Settings = {
 
     AntiAFK = true,
 
-    -- Queue the hub loader for future Roblox teleports/rejoins.
-    AutoExecuteOnTeleport = false,
+    -- Auto Execute is inherited only from a queued Roblox teleport chain.
+    -- A normal fresh/manual execution starts disabled.
+    AutoExecuteOnTeleport =
+        rawget(
+            getgenv(),
+            "__HOLLOWMOON_TELEPORT_CHAIN"
+        ) == true,
 
     AntiSunDamage = false,
     AntiRagdoll = false,
 }
+
+
+-- Consume the one-server teleport-chain marker. Auto Execute remains enabled
+-- through Settings, but a future normal game launch will not inherit it.
+getgenv().__HOLLOWMOON_TELEPORT_CHAIN =
+    nil
+
 
 local HubRunning = true
 
@@ -30188,12 +30200,11 @@ local function QueueHollowMoonHubForTeleport()
     end
 
     ----------------------------------------------------------
-    -- SELF-PERPETUATING TELEPORT LOADER
+    -- ONE-TELEPORT LOADER
     --
-    -- Important:
-    -- Rayfield restoring a saved toggle does not always execute the toggle
-    -- callback. Therefore the queued loader re-queues ITSELF as soon as the
-    -- next server starts, before loading HollowMoonHub.
+    -- This is queued only after LocalPlayer.OnTeleport reports that an
+    -- actual Roblox teleport is starting. It does NOT requeue itself here,
+    -- which means a normal leave -> fresh join will not auto-run the hub.
     ----------------------------------------------------------
 
     local Source = [=[
@@ -30228,180 +30239,12 @@ ReplicatedStorage:WaitForChild("CAM", 30)
 
 task.wait(0.75)
 
+-- This queue entry is being consumed now.
 getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
 
-local function getQueue()
-    local q =
-        rawget(
-            getgenv(),
-            "queue_on_teleport"
-        )
-        or rawget(
-            getgenv(),
-            "queueonteleport"
-        )
-
-    if type(q) ~= "function"
-        and type(syn) == "table"
-    then
-        q =
-            syn.queue_on_teleport
-    end
-
-    return type(q) == "function"
-        and q
-        or nil
-end
-
-local function queueNext()
-    local q =
-        getQueue()
-
-    if not q then
-        return false
-    end
-
-    local nextSource = [==[
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
-local Players =
-    game:GetService("Players")
-
-local ReplicatedStorage =
-    game:GetService("ReplicatedStorage")
-
-local player =
-    Players.LocalPlayer
-
-local started =
-    os.clock()
-
-while not player
-    and os.clock() - started < 30
-do
-    task.wait(0.10)
-    player = Players.LocalPlayer
-end
-
-if player then
-    player:WaitForChild("PlayerGui", 30)
-end
-
-ReplicatedStorage:WaitForChild("CAM", 30)
-
-task.wait(0.75)
-
-getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED = nil
-
-local function getQueue()
-    local q =
-        rawget(
-            getgenv(),
-            "queue_on_teleport"
-        )
-        or rawget(
-            getgenv(),
-            "queueonteleport"
-        )
-
-    if type(q) ~= "function"
-        and type(syn) == "table"
-    then
-        q =
-            syn.queue_on_teleport
-    end
-
-    return type(q) == "function"
-        and q
-        or nil
-end
-
-local q =
-    getQueue()
-
-if q then
-    pcall(
-        q,
-        [[
-if not game:IsLoaded() then
-    game.Loaded:Wait()
-end
-
-local Players =
-    game:GetService("Players")
-
-local ReplicatedStorage =
-    game:GetService("ReplicatedStorage")
-
-local player =
-    Players.LocalPlayer
-
-local started =
-    os.clock()
-
-while not player
-    and os.clock() - started < 30
-do
-    task.wait(0.10)
-    player = Players.LocalPlayer
-end
-
-if player then
-    player:WaitForChild("PlayerGui", 30)
-end
-
-ReplicatedStorage:WaitForChild("CAM", 30)
-
-task.wait(0.75)
-loadstring(
-    game:HttpGet(
-        "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
-    )
-)()
-]]
-    )
-end
-
-if not getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
-    getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
-
-    pcall(function()
-        local ExistingUnload =
-            rawget(
-                getgenv(),
-                "__HOLLOWMOON_AUTOCLICK_UNLOAD"
-            )
-
-        if type(ExistingUnload) == "function" then
-            pcall(ExistingUnload)
-            task.wait(0.15)
-        end
-
-        loadstring(
-            game:HttpGet(
-                "https://raw.githubusercontent.com/Lolnoah101/Test/refs/heads/main/testing"
-            )
-        )()
-    end)
-
-    task.delay(
-        5,
-        function()
-            getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = nil
-        end
-    )
-end
-]==]
-
-    return pcall(
-        q,
-        nextSource
-    )
-end
-
-queueNext()
+-- Mark this execution as part of the current teleport chain. The loaded hub
+-- consumes this marker and automatically starts a fresh OnTeleport watcher.
+getgenv().__HOLLOWMOON_TELEPORT_CHAIN = true
 
 if not getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING then
     getgenv().__HOLLOWMOON_TELEPORT_LOADER_EXECUTING = true
@@ -30448,27 +30291,98 @@ end
     return Success
 end
 
+
 local AutoExecuteController = {
-    Queued = false,
+    Enabled = false,
+    TeleportConnection = nil,
+    QueuedThisTeleport = false,
 }
 
 
 function AutoExecuteController:Enable()
-    local Success =
-        QueueHollowMoonHubForTeleport()
+    if self.Enabled then
+        return true
+    end
 
-    self.Queued =
-        Success
+    self.Enabled =
+        true
 
-    return Success
+    self.QueuedThisTeleport =
+        false
+
+    if self.TeleportConnection then
+        self.TeleportConnection:Disconnect()
+
+        self.TeleportConnection =
+            nil
+    end
+
+    self.TeleportConnection =
+        LocalPlayer.OnTeleport:Connect(
+            function(State)
+                if not HubRunning
+                    or not self.Enabled
+                    or not Settings.AutoExecuteOnTeleport
+                then
+                    return
+                end
+
+                --------------------------------------------------
+                -- Queue ONLY when Roblox is actually beginning a teleport.
+                --------------------------------------------------
+
+                if State
+                    == Enum.TeleportState.Started
+                    or State
+                        == Enum.TeleportState.WaitingForServer
+                    or State
+                        == Enum.TeleportState.InProgress
+                then
+                    if self.QueuedThisTeleport then
+                        return
+                    end
+
+                    self.QueuedThisTeleport =
+                        true
+
+                    local Queued =
+                        QueueHollowMoonHubForTeleport()
+
+                    if not Queued then
+                        self.QueuedThisTeleport =
+                            false
+                    end
+
+                elseif State
+                    == Enum.TeleportState.Failed
+                then
+                    -- Teleport never completed; permit another attempt.
+                    self.QueuedThisTeleport =
+                        false
+
+                    getgenv().__HOLLOWMOON_TELEPORT_LOADER_QUEUED =
+                        nil
+                end
+            end
+        )
+
+    return true
 end
 
 
 function AutoExecuteController:Disable()
-    -- Most executor queue_on_teleport APIs do not expose a portable
-    -- "dequeue" operation. Disabling prevents future queues after this load.
-    self.Queued =
+    self.Enabled =
         false
+
+    self.QueuedThisTeleport =
+        false
+
+    if self.TeleportConnection then
+        self.TeleportConnection:Disconnect()
+
+        self.TeleportConnection =
+            nil
+    end
 end
 
 
@@ -30477,8 +30391,11 @@ function AutoExecuteController:Refresh()
         return self:Enable()
     end
 
+    self:Disable()
+
     return false
 end
+
 
 
 local PlayerMovementGroup =
@@ -30625,7 +30542,7 @@ SettingsRow:CreateToggle({
 
 SettingsRow:CreateToggle({
     name = "Auto Execute",
-    value = false,
+    value = Settings.AutoExecuteOnTeleport,
     flag = "AutoExecuteOnTeleport",
 
     callback = function(Value)
@@ -30633,13 +30550,18 @@ SettingsRow:CreateToggle({
             Value
 
         if Value then
-            local Queued =
+            local Supported =
+                GetTeleportQueueFunction()
+                ~= nil
+
+            if Supported then
                 AutoExecuteController:Enable()
+            end
 
             Toast(
                 "Auto Execute",
-                Queued
-                    and "Queued for future teleports"
+                Supported
+                    and "Watching for Roblox teleports"
                     or "queue_on_teleport is unavailable"
             )
         else
@@ -30647,7 +30569,7 @@ SettingsRow:CreateToggle({
 
             Toast(
                 "Auto Execute",
-                "Disabled for future queues"
+                "Disabled"
             )
         end
     end,
@@ -30752,6 +30674,8 @@ local function UnloadHub()
     QuestFarmController:Stop()
 
     StopAntiSunDamage()
+
+    AutoExecuteController:Disable()
 
     ----------------------------------------------------------
     -- CLEAR SHARED MOVEMENT / BUSY FLAGS
